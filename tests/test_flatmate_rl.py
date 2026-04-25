@@ -108,6 +108,27 @@ def test_store_user_details_does_not_return_expected_answers_payload() -> None:
     }
 
 
+def test_observation_surfaces_prerequisites_and_recent_tool_calls() -> None:
+    env = FlatmateRlEnvironment()
+    env.reset(scenario_id="task_visit_single")
+
+    _msg(env, "Please share your dietary preference and visit availability.")
+    stored = _tool(env, "store_user_details")
+
+    assert stored.prerequisites_satisfied["details_stored"] is True
+    assert stored.prerequisites_satisfied["posts_searched"] is False
+    assert stored.recent_tool_calls[-1] == {
+        "tool_name": "store_user_details",
+        "tool_arguments_summary": SCENARIOS["task_visit_single"]["scenario_creation_config"]["expected_answers"],
+        "success": True,
+    }
+
+    searched = _tool(env, "search_posts")
+    assert searched.prerequisites_satisfied["posts_searched"] is True
+    assert searched.recent_tool_calls[-1]["tool_name"] == "search_posts"
+    assert searched.recent_tool_calls[-1]["success"] is True
+
+
 def test_strict_eval_mode_hides_scenario_metadata_and_reward(monkeypatch) -> None:
     monkeypatch.setenv("STRICT_EVAL_MODE", "1")
 

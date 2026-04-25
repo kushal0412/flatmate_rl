@@ -886,6 +886,37 @@ class FlatmateEpisode:
     def _profile_stored(self) -> bool:
         return self._state.seller_profile_stored if self._state.phase == "seller" else self._state.buyer_profile_stored
 
+    def _prerequisites_satisfied(self) -> dict[str, bool]:
+        return {
+            "details_stored": self._profile_stored(),
+            "posts_searched": self._searched,
+            "location_matched": any(self._matched_posts.values()),
+            "slots_checked": bool(self._slots_checked),
+            "buyer_confirmed": bool(self._client_confirmations or self._buyer_offer_confirmations),
+            "poster_confirmed": bool(self._poster_confirmations or self._seller_confirmations),
+        }
+
+    def _tool_arguments_summary(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        summary: dict[str, Any] = {}
+        for key, value in arguments.items():
+            if isinstance(value, list):
+                summary[key] = value if len(value) <= 3 else [*value[:3], f"... {len(value) - 3} more"]
+            elif isinstance(value, dict):
+                summary[key] = f"{len(value)} keys"
+            else:
+                summary[key] = value
+        return summary
+
+    def _recent_tool_calls(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "tool_name": trace.get("tool", ""),
+                "tool_arguments_summary": self._tool_arguments_summary(dict(trace.get("args") or {})),
+                "success": bool(trace.get("success")),
+            }
+            for trace in self._tool_trace[-5:]
+        ]
+
     def _sanitize_tool_result(self, result: dict[str, Any]) -> dict[str, Any]:
         sanitized = deepcopy(result)
         sanitized.pop("stored_profile", None)
@@ -982,6 +1013,8 @@ class FlatmateEpisode:
             tool_results=deepcopy(self._tool_results),
             tool_trace=deepcopy(self._tool_trace),
             available_tools=self._phase_tools(),
+            prerequisites_satisfied=self._prerequisites_satisfied(),
+            recent_tool_calls=self._recent_tool_calls(),
             gathered_fields=list(self._state.gathered_fields),
             remaining_required_fields=self._remaining_fields(),
             selected_posts=list(self._state.selected_posts),

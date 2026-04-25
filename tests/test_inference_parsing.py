@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from flatmate_rl.inference import malformed_action_observation, parse_action
+from flatmate_rl.inference import build_user_prompt, malformed_action_observation, parse_action
 from flatmate_rl.server.flatmate_rl_environment import FlatmateRlEnvironment
+from flatmate_rl.models import FlatmateRlAction
 
 
 def test_strict_parse_rejects_tool_name_in_action_type() -> None:
@@ -45,3 +46,27 @@ def test_malformed_action_feedback_is_recoverable() -> None:
     assert feedback_obs.last_tool_result["error"] == "schema_validation_failed"
     assert "expected_schema" in feedback_obs.last_tool_result
 
+
+def test_user_prompt_renders_prerequisites_and_recent_tools() -> None:
+    env = FlatmateRlEnvironment()
+    obs = env.reset(scenario_id="task_visit_single")
+    obs = env.step(
+        FlatmateRlAction(
+            action_type="assistant_message",
+            assistant_message="Please share your dietary preference and visit availability.",
+        )
+    )
+    obs = env.step(
+        FlatmateRlAction(
+            action_type="tool_call",
+            tool_name="store_user_details",
+            tool_arguments={},
+        )
+    )
+
+    prompt = build_user_prompt(step=2, observation=obs)
+
+    assert "Prerequisites satisfied:" in prompt
+    assert '"details_stored": true' in prompt
+    assert "Recent tool calls:" in prompt
+    assert "store_user_details" in prompt

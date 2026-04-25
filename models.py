@@ -48,6 +48,14 @@ class FlatmateRlObservation(Observation):
     tool_results: list[dict[str, Any]] = Field(default_factory=list, description="All tool results so far.")
     tool_trace: list[dict[str, Any]] = Field(default_factory=list, description="Tool call trace with args and outcomes.")
     available_tools: list[str] = Field(default_factory=list, description="Tools available in the current phase.")
+    prerequisites_satisfied: dict[str, bool] = Field(
+        default_factory=dict,
+        description="Compact workflow state: details_stored, posts_searched, location_matched, slots_checked, buyer_confirmed, poster_confirmed.",
+    )
+    recent_tool_calls: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Last five tool calls as compact tool_name, tool_arguments_summary, success entries.",
+    )
     gathered_fields: list[str] = Field(default_factory=list, description="Fields gathered so far for the active phase.")
     remaining_required_fields: list[str] = Field(default_factory=list, description="Required fields still missing.")
     selected_posts: list[str] = Field(default_factory=list, description="Posts selected by the buyer.")

@@ -366,6 +366,8 @@ def build_user_prompt(step: int, observation: Any) -> str:
         Current user request: {observation.current_user_request}
         Last user message: {observation.last_user_message}
         Available tools: {observation.available_tools}
+        Prerequisites satisfied: {json.dumps(observation.prerequisites_satisfied, ensure_ascii=False)}
+        Recent tool calls: {json.dumps(observation.recent_tool_calls, ensure_ascii=False)}
         Gathered fields: {observation.gathered_fields}
         Remaining required fields: {observation.remaining_required_fields}
         Selected posts: {observation.selected_posts}
