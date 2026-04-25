@@ -14,6 +14,8 @@ import json
 import os
 import re
 import textwrap
+from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 from openai import OpenAI
@@ -41,6 +43,7 @@ MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 MAX_STEPS_ENV = os.getenv("MAX_STEPS")
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "256"))
+MALFORMED_ACTION_PENALTY = -0.05
 
 SYSTEM_PROMPT = textwrap.dedent(
     """
@@ -110,12 +113,14 @@ def format_action_with_reasoning(action: FlatmateRlAction | None, reasoning: dic
     if action is None:
         return "None"
     payload = json.loads(format_action(action))
-    if reasoning:
+    if reasoning and "error" not in reasoning:
         payload["reasoning"] = reasoning.get("decision_summary") or reasoning.get("why_this_action_now") or reasoning
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
-def actions_match(actual: FlatmateRlAction, expected: FlatmateRlAction | None) -> bool:
+def actions_match(actual: FlatmateRlAction | None, expected: FlatmateRlAction | None) -> bool:
+    if actual is None:
+        return False
     if expected is None:
         return True
     if actual.action_type != expected.action_type:
@@ -207,7 +212,7 @@ def log_verbose_step(
     raw_observation: Any,
     policy_observation: Any,
     expected_action: FlatmateRlAction | None,
-    actual_action: FlatmateRlAction,
+    actual_action: FlatmateRlAction | None,
     model_raw_response: str | None,
     model_debug_explanation: dict[str, Any] | None,
 ) -> None:
@@ -291,7 +296,7 @@ def log_initial_conversation(observation: Any) -> tuple[int, int]:
 def log_step_report(
     *,
     step: int,
-    action: FlatmateRlAction,
+    action: FlatmateRlAction | None,
     expected_action: FlatmateRlAction | None,
     model_raw_response: str | None,
     model_debug_explanation: dict[str, Any] | None,
@@ -332,7 +337,7 @@ def log_step_report(
     print(_block("policy_check :", policy_status), flush=True)
     print("", flush=True)
 
-    tool_used = action.tool_name if action.action_type == "tool_call" else "none"
+    tool_used = action.tool_name if action is not None and action.action_type == "tool_call" else "none"
     print(_block("tool_used :", tool_used), flush=True)
     print("", flush=True)
 
@@ -380,58 +385,124 @@ def build_user_prompt(step: int, observation: Any) -> str:
     ).strip()
 
 
-def normalize_action_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+@dataclass
+class ParsedAction:
+    action: FlatmateRlAction | None
+    error: str | None = None
+    warning: str | None = None
+
+
+def _schema_error_details(candidate: dict[str, Any]) -> str | None:
+    action_type = candidate.get("action_type")
+    if action_type not in {"assistant_message", "tool_call"}:
+        return f"action_type must be 'assistant_message' or 'tool_call', got {action_type!r}"
+    if action_type == "assistant_message" and not str(candidate.get("assistant_message", "")).strip():
+        return "assistant_message is required when action_type is 'assistant_message'"
+    if action_type == "tool_call" and not str(candidate.get("tool_name", "")).strip():
+        return "tool_name is required when action_type is 'tool_call'"
+    return None
+
+
+def normalize_action_candidate(candidate: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
     normalized = dict(candidate)
+    warning = None
     action_type = str(normalized.get("action_type", "")).strip()
     tool_name = str(normalized.get("tool_name", "")).strip()
 
     if not action_type and tool_name:
         normalized["action_type"] = "tool_call"
         normalized.setdefault("tool_arguments", {})
-        return normalized
+        warning = "coerced missing action_type to tool_call because tool_name was present"
+        return normalized, warning
 
     if action_type in {"assistant", "message"} and "assistant_message" in normalized:
         normalized["action_type"] = "assistant_message"
         normalized.pop("tool_name", None)
         normalized.pop("tool_arguments", None)
-        return normalized
+        warning = f"coerced action_type {action_type!r} to assistant_message"
+        return normalized, warning
 
     if action_type and action_type not in {"assistant_message", "tool_call"} and not tool_name:
         normalized["action_type"] = "tool_call"
         normalized["tool_name"] = action_type
         normalized.setdefault("tool_arguments", {})
-        return normalized
+        warning = f"coerced invalid action_type {action_type!r} into tool_name"
+        return normalized, warning
 
-    return normalized
+    return normalized, warning
 
 
-def parse_action(text: str) -> FlatmateRlAction | None:
+def parse_action(text: str, *, strict: bool = True) -> ParsedAction:
     cleaned = (text or "").strip()
     if not cleaned:
-        return None
+        return ParsedAction(action=None, error="json_parse_failed: empty model response")
 
-    candidates: list[dict[str, Any]] = []
     try:
         parsed = json.loads(cleaned)
-        if isinstance(parsed, dict):
-            candidates.append(parsed)
-    except json.JSONDecodeError:
-        pass
+    except json.JSONDecodeError as exc:
+        if strict:
+            return ParsedAction(action=None, error=f"json_parse_failed: {exc.msg} at line {exc.lineno} column {exc.colno}")
+        parsed = None
+
+    if strict:
+        if not isinstance(parsed, dict):
+            return ParsedAction(action=None, error=f"schema_validation_failed: expected JSON object, got {type(parsed).__name__}")
+        schema_detail = _schema_error_details(parsed)
+        if schema_detail:
+            return ParsedAction(action=None, error=f"schema_validation_failed: {schema_detail}")
+        try:
+            return ParsedAction(action=FlatmateRlAction.model_validate(parsed))
+        except Exception as exc:
+            return ParsedAction(action=None, error=f"schema_validation_failed: {exc}")
+
+    candidates: list[dict[str, Any]] = []
+    if isinstance(parsed, dict):
+        candidates.append(parsed)
 
     for match in re.finditer(r"\{.*\}", cleaned, flags=re.DOTALL):
         try:
-            parsed = json.loads(match.group(0))
+            extracted = json.loads(match.group(0))
         except json.JSONDecodeError:
             continue
-        if isinstance(parsed, dict):
-            candidates.append(parsed)
+        if isinstance(extracted, dict):
+            candidates.append(extracted)
 
+    last_error = "schema_validation_failed: no valid action object found"
     for candidate in candidates:
+        normalized, warning = normalize_action_candidate(candidate)
         try:
-            return FlatmateRlAction.model_validate(normalize_action_candidate(candidate))
-        except Exception:
+            return ParsedAction(action=FlatmateRlAction.model_validate(normalized), warning=warning)
+        except Exception as exc:
+            last_error = f"schema_validation_failed: {exc}"
             continue
-    return None
+    return ParsedAction(action=None, error=last_error)
+
+
+def malformed_action_observation(observation: Any, details: str) -> Any:
+    payload = observation.model_dump()
+    malformed_result = {
+        "error": "schema_validation_failed",
+        "details": details,
+        "expected_schema": FlatmateRlAction.model_json_schema(),
+    }
+    payload["status"] = "tool_result"
+    payload["last_tool_result"] = malformed_result
+    payload["tool_results"] = list(payload.get("tool_results", [])) + [malformed_result]
+    payload["step_reward"] = MALFORMED_ACTION_PENALTY
+    payload["reward"] = MALFORMED_ACTION_PENALTY
+    payload["total_reward"] = float(payload.get("total_reward", 0.0)) + MALFORMED_ACTION_PENALTY
+    payload["message"] = "Malformed action output. Return a valid FlatmateRlAction JSON object."
+    payload["feedback_summary"] = "Use action_type='assistant_message' or action_type='tool_call' with a non-empty tool_name."
+    payload["done"] = False
+    return type(observation).model_validate(payload)
+
+
+def apply_total_reward_adjustment(observation: Any, adjustment: float) -> Any:
+    if not adjustment:
+        return observation
+    payload = observation.model_dump()
+    payload["total_reward"] = float(payload.get("total_reward", 0.0)) + adjustment
+    return type(observation).model_validate(payload)
 
 
 def sanitize_observation_for_policy(observation: Any, strict_eval: bool) -> Any:
@@ -557,7 +628,8 @@ def get_model_action(
     step: int,
     observation: Any,
     explain: bool,
-) -> tuple[FlatmateRlAction, str, str | None, str, dict[str, Any] | None]:
+    strict_parsing: bool,
+) -> tuple[FlatmateRlAction | None, str, str | None, str, dict[str, Any] | None]:
     user_prompt = build_user_prompt(step=step, observation=observation)
     try:
         completion = client.chat.completions.create(
@@ -571,14 +643,22 @@ def get_model_action(
             stream=False,
         )
         text = (completion.choices[0].message.content or "").strip()
-        action = parse_action(text)
-        if action is not None:
-            explanation = get_model_explanation(client, step, observation, action, text) if explain else None
-            return action, "model", None, text, explanation
+        parsed = parse_action(text, strict=strict_parsing)
+        if parsed.warning:
+            print(f"[WARN] parser_coercion {parsed.warning}", flush=True)
+        if parsed.action is not None:
+            explanation = get_model_explanation(client, step, observation, parsed.action, text) if explain else None
+            return parsed.action, "model", None, text, explanation
+        if strict_parsing:
+            explanation = {"error": parsed.error} if parsed.error else None
+            return None, "model_parse_error", parsed.error or "invalid_model_output", text, explanation
         fallback_action = heuristic_action(task_id, observation)
+        if parsed.error:
+            print(f"[WARN] parser_fallback {parsed.error}", flush=True)
         explanation = {
             "message": "Primary model output could not be parsed, so heuristic fallback was used.",
             "raw_model_response": text,
+            "parse_error": parsed.error,
             "fallback_action": json.loads(format_action(fallback_action)),
         }
         return fallback_action, "heuristic_fallback", f"unparseable_model_output={text!r}", text, explanation
@@ -598,6 +678,7 @@ async def run_scenario(
     max_steps: int | None,
     strict_eval: bool,
     verbose: bool,
+    strict_parsing: bool,
 ) -> dict[str, Any]:
     result = await env.reset(scenario_id=task_id)
     observation = result.observation
@@ -605,6 +686,7 @@ async def run_scenario(
     steps_taken = 0
     buyer_logged_count = 0
     seller_logged_count = 0
+    local_reward_adjustment = 0.0
 
     log_start(task_id=task_id, model=MODEL_NAME if client else "heuristic", source="model" if client else "heuristic")
     if verbose:
@@ -633,6 +715,7 @@ async def run_scenario(
                 step=step,
                 observation=policy_observation,
                 explain=verbose,
+                strict_parsing=strict_parsing,
             )
         if verbose:
             log_verbose_step(
@@ -646,8 +729,15 @@ async def run_scenario(
                 model_debug_explanation=model_debug_explanation,
             )
 
-        result = await env.step(action)
-        observation = result.observation
+        if action is None:
+            local_reward_adjustment += MALFORMED_ACTION_PENALTY
+            observation = malformed_action_observation(observation, error or "invalid_model_output")
+            result = SimpleNamespace(observation=observation, reward=MALFORMED_ACTION_PENALTY, done=False)
+        else:
+            result = await env.step(action)
+            observation = result.observation
+            observation = apply_total_reward_adjustment(observation, local_reward_adjustment)
+            result = SimpleNamespace(observation=observation, reward=result.reward, done=result.done)
         steps_taken = step
         buyer_entries, buyer_logged_count = extract_new_chat_entries(
             observation.buyer_conversation_history,
@@ -724,6 +814,12 @@ async def main() -> None:
     parser.add_argument("--heuristic-only", action="store_true", help="Skip model calls and use only the heuristic policy.")
     parser.add_argument("--startup-timeout", type=float, default=90.0)
     parser.add_argument("--strict-eval", action="store_true", help="Hide scenario metadata and reward signals from the broker policy.")
+    parser.add_argument(
+        "--strict-parsing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Reject malformed action JSON instead of coercing it. Use --no-strict-parsing for legacy coercion.",
+    )
     parser.add_argument("--verbose", action="store_true", help="Print scenario checks, expected actions, and detailed state diagnostics.")
     args = parser.parse_args()
 
@@ -742,6 +838,7 @@ async def main() -> None:
                     max_steps=args.max_steps,
                     strict_eval=args.strict_eval,
                     verbose=args.verbose,
+                    strict_parsing=args.strict_parsing,
                 )
             )
         print("[SUMMARY] " + json.dumps(summaries, ensure_ascii=False), flush=True)
