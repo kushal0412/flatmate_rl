@@ -632,7 +632,7 @@ async def run_scenario(
                 task_id=task_id,
                 step=step,
                 observation=policy_observation,
-                explain=True,
+                explain=verbose,
             )
         if verbose:
             log_verbose_step(
