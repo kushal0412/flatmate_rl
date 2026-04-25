@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
-from flatmate_rl.inference import build_user_prompt, malformed_action_observation, parse_action
+from flatmate_rl.inference import (
+    ModelConfigurationError,
+    build_user_prompt,
+    get_model_action,
+    malformed_action_observation,
+    parse_action,
+)
 from flatmate_rl.server.flatmate_rl_environment import FlatmateRlEnvironment
 from flatmate_rl.models import FlatmateRlAction
 
@@ -70,3 +78,23 @@ def test_user_prompt_renders_prerequisites_and_recent_tools() -> None:
     assert '"details_stored": true' in prompt
     assert "Recent tool calls:" in prompt
     assert "store_user_details" in prompt
+
+
+def test_model_call_error_does_not_fallback_to_heuristic() -> None:
+    class FailingCompletions:
+        def create(self, **kwargs):
+            raise RuntimeError("requested model is not supported")
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FailingCompletions()))
+    env = FlatmateRlEnvironment()
+    obs = env.reset(scenario_id="task_visit_single")
+
+    with pytest.raises(ModelConfigurationError, match="MODEL_NAME is invalid or unsupported"):
+        get_model_action(
+            client=client,
+            task_id="task_visit_single",
+            step=1,
+            observation=obs,
+            explain=False,
+            strict_parsing=True,
+        )

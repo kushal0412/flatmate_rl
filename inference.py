@@ -46,6 +46,11 @@ TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "256"))
 MALFORMED_ACTION_PENALTY = -0.05
 
+
+class ModelConfigurationError(RuntimeError):
+    """Raised when configured model inference cannot be used."""
+
+
 SYSTEM_PROMPT = textwrap.dedent(
     """
     You are a flatmate visit-scheduling broker agent.
@@ -661,12 +666,11 @@ def get_model_action(
         }
         return fallback_action, "heuristic_fallback", f"unparseable_model_output={text!r}", text, explanation
     except Exception as exc:
-        fallback_action = heuristic_action(task_id, observation)
-        explanation = {
-            "message": "Primary model call failed, so heuristic fallback was used.",
-            "fallback_action": json.loads(format_action(fallback_action)),
-        }
-        return fallback_action, "heuristic_fallback", str(exc), "", explanation
+        raise ModelConfigurationError(
+            f"MODEL_NAME is invalid or unsupported for API_BASE_URL: {MODEL_NAME!r}. "
+            "Use --heuristic-only to run the heuristic policy, or set MODEL_NAME to a supported model. "
+            f"Provider error: {exc}"
+        ) from exc
 
 
 async def run_scenario(
@@ -842,6 +846,9 @@ async def main() -> None:
                 )
             )
         print("[SUMMARY] " + json.dumps(summaries, ensure_ascii=False), flush=True)
+    except ModelConfigurationError as exc:
+        print(f"[ERROR] {exc}", flush=True)
+        raise SystemExit(2) from exc
     finally:
         await env.close()
 
