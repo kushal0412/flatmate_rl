@@ -22,12 +22,12 @@ from openenv.core.containers.runtime.providers import LocalDockerProvider
 try:
     from flatmate_rl.env_config import load_repo_env
     from flatmate_rl import FlatmateRlAction, FlatmateRlEnv
-    from flatmate_rl.server.heuristic_policy import autopolicy_next_request
+    from flatmate_rl.server.heuristic_policy import autopolicy_next_request, expected_policy_action
     from flatmate_rl.server.scenarios import SCENARIOS
 except ImportError:
     from env_config import load_repo_env
     from __init__ import FlatmateRlAction, FlatmateRlEnv
-    from server.heuristic_policy import autopolicy_next_request
+    from server.heuristic_policy import autopolicy_next_request, expected_policy_action
     from server.scenarios import SCENARIOS
 
 load_repo_env()
@@ -68,33 +68,6 @@ def log_start(task_id: str, model: str, source: str) -> None:
     print(f"[START] scenario={task_id} model={model} source={source}", flush=True)
 
 
-def log_step(
-    step: int,
-    action: FlatmateRlAction,
-    reward: float,
-    done: bool,
-    status: str,
-    phase: str,
-    total_reward: float,
-    bookings: int,
-    violations: int,
-    source: str,
-    message: str,
-    error: str | None,
-) -> None:
-    error_val = error if error else "null"
-    message_clean = re.sub(r"\s+", " ", message or "").strip()
-    action_detail = f"tool={action.tool_name}" if action.action_type == "tool_call" else "action=assistant_message"
-    print(
-        f"[broker_step] "
-        f"step={step} {action_detail} "
-        f"reward={reward:.2f} total_reward={total_reward:.2f} bookings={bookings} "
-        f"violations={violations} phase={phase} status={status} done={str(done).lower()} "
-        f"source={source} message={message_clean} error={error_val}",
-        flush=True,
-    )
-
-
 def log_end(task_id: str, success: bool, steps: int, total_reward: float, booked_visits: int, final_status: str) -> None:
     print(
         f"[END] scenario={task_id} success={str(success).lower()} steps={steps} "
@@ -129,6 +102,25 @@ def format_action(action: FlatmateRlAction | dict[str, Any] | None) -> str:
         ensure_ascii=False,
         sort_keys=True,
     )
+
+
+def format_action_with_reasoning(action: FlatmateRlAction | None, reasoning: dict[str, Any] | None) -> str:
+    if action is None:
+        return "None"
+    payload = json.loads(format_action(action))
+    if reasoning:
+        payload["reasoning"] = reasoning.get("decision_summary") or reasoning.get("why_this_action_now") or reasoning
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def actions_match(actual: FlatmateRlAction, expected: FlatmateRlAction | None) -> bool:
+    if expected is None:
+        return True
+    if actual.action_type != expected.action_type:
+        return False
+    if actual.action_type == "assistant_message":
+        return actual.assistant_message.strip() == expected.assistant_message.strip()
+    return actual.tool_name == expected.tool_name and actual.tool_arguments == expected.tool_arguments
 
 
 def scenario_check_snapshot(task_id: str, observation: Any) -> dict[str, Any]:
@@ -270,17 +262,92 @@ def log_verbose_post_step(task_id: str, step: int, observation: Any) -> None:
     )
 
 
-def log_turn(step: int, channel: str, role: str, content: str) -> None:
-    message_clean = re.sub(r"\s+", " ", content or "").strip()
-    label = "[seller_chat]" if channel == "seller" else "[buyer_chat]"
-    speaker = "broker" if role == "assistant" else ("seller_simulator" if channel == "seller" else "buyer_simulator")
-    print(f"{label} step={step} speaker={speaker} message={message_clean}", flush=True)
+def extract_new_chat_entries(history: list[dict[str, Any]], start_idx: int) -> tuple[list[dict[str, Any]], int]:
+    return history[start_idx:], len(history)
 
 
-def log_new_chat_entries(step: int, channel: str, history: list[dict[str, Any]], start_idx: int) -> int:
-    for entry in history[start_idx:]:
-        log_turn(step=step, channel=channel, role=entry.get("role", ""), content=entry.get("content", ""))
-    return len(history)
+def _clean_text(value: str | None) -> str:
+    return re.sub(r"\s+", " ", value or "").strip()
+
+
+def _block(title: str, body: str) -> str:
+    return f"{title}\n{body}"
+
+
+def log_initial_conversation(observation: Any) -> tuple[int, int]:
+    buyer_history = observation.buyer_conversation_history
+    seller_history = observation.seller_conversation_history
+    if buyer_history:
+        print(_block("user initiated conversation", _clean_text(buyer_history[0].get("content", ""))), flush=True)
+        print("", flush=True)
+    if seller_history:
+        print(_block("seller initiated conversation", _clean_text(seller_history[0].get("content", ""))), flush=True)
+        print("", flush=True)
+    return len(buyer_history), len(seller_history)
+
+
+def log_step_report(
+    *,
+    step: int,
+    action: FlatmateRlAction,
+    expected_action: FlatmateRlAction | None,
+    model_raw_response: str | None,
+    model_debug_explanation: dict[str, Any] | None,
+    buyer_entries: list[dict[str, Any]],
+    seller_entries: list[dict[str, Any]],
+    reward: float,
+    total_reward: float,
+    status: str,
+    done: bool,
+    tool_result: dict[str, Any],
+    message: str,
+    source: str,
+    error: str | None,
+) -> None:
+    policy_status = "success" if actions_match(action, expected_action) else "violation"
+    print(f"step {step}", flush=True)
+    print("", flush=True)
+
+    for entry in buyer_entries:
+        label = "broker response :" if entry.get("role") == "assistant" else "buyer_chat :"
+        print(_block(label, _clean_text(entry.get("content", ""))), flush=True)
+        print("", flush=True)
+
+    for entry in seller_entries:
+        label = "broker response :" if entry.get("role") == "assistant" else "seller_chat :"
+        print(_block(label, _clean_text(entry.get("content", ""))), flush=True)
+        print("", flush=True)
+
+    print(_block("expected_response :", format_action(expected_action)), flush=True)
+    print("", flush=True)
+
+    print(_block("llm_raw_response :", model_raw_response or "null"), flush=True)
+    print("", flush=True)
+
+    print(_block("llm_parsed_action :", format_action_with_reasoning(action, model_debug_explanation)), flush=True)
+    print("", flush=True)
+
+    print(_block("policy_check :", policy_status), flush=True)
+    print("", flush=True)
+
+    tool_used = action.tool_name if action.action_type == "tool_call" else "none"
+    print(_block("tool_used :", tool_used), flush=True)
+    print("", flush=True)
+
+    print(_block("tool_result :", json.dumps(tool_result, ensure_ascii=False, sort_keys=True)), flush=True)
+    print("", flush=True)
+
+    reward_text = (
+        f"step_reward={reward:.2f}\n"
+        f"total_reward={total_reward:.2f}\n"
+        f"status={status}\n"
+        f"done={str(done).lower()}\n"
+        f"source={source}\n"
+        f"message={_clean_text(message)}\n"
+        f"error={error or 'null'}"
+    )
+    print(_block("reward :", reward_text), flush=True)
+    print("\n" + ("-" * 60) + "\n", flush=True)
 
 
 def build_user_prompt(step: int, observation: Any) -> str:
@@ -410,7 +477,7 @@ def missing_fields_from_feedback(observation: dict[str, Any]) -> list[str]:
 
 
 def heuristic_action(task_id: str, observation: Any) -> FlatmateRlAction:
-    payload = autopolicy_next_request(task_id, observation.model_dump())
+    payload = expected_policy_action(task_id, observation.model_dump())
     if payload is None:
         raise RuntimeError("Heuristic policy produced no action for a non-terminal observation.")
     return FlatmateRlAction.model_validate(payload)
@@ -540,18 +607,7 @@ async def run_scenario(
     log_start(task_id=task_id, model=MODEL_NAME if client else "heuristic", source="model" if client else "heuristic")
     if verbose:
         log_verbose_scenario(task_id)
-    buyer_logged_count = log_new_chat_entries(
-        step=0,
-        channel="buyer",
-        history=observation.buyer_conversation_history,
-        start_idx=buyer_logged_count,
-    )
-    seller_logged_count = log_new_chat_entries(
-        step=0,
-        channel="seller",
-        history=observation.seller_conversation_history,
-        start_idx=seller_logged_count,
-    )
+    buyer_logged_count, seller_logged_count = log_initial_conversation(observation)
 
     for step in range(1, limit + 1):
         if result.done:
@@ -561,7 +617,7 @@ async def run_scenario(
         expected_action = None
         model_raw_response = None
         model_debug_explanation = None
-        expected_payload = autopolicy_next_request(task_id, observation.model_dump())
+        expected_payload = expected_policy_action(task_id, observation.model_dump())
         if expected_payload is not None:
             expected_action = FlatmateRlAction.model_validate(expected_payload)
         if client is None:
@@ -574,7 +630,7 @@ async def run_scenario(
                 task_id=task_id,
                 step=step,
                 observation=policy_observation,
-                explain=verbose,
+                explain=True,
             )
         if verbose:
             log_verbose_step(
@@ -591,29 +647,28 @@ async def run_scenario(
         result = await env.step(action)
         observation = result.observation
         steps_taken = step
-        buyer_logged_count = log_new_chat_entries(
-            step=step,
-            channel="buyer",
-            history=observation.buyer_conversation_history,
-            start_idx=buyer_logged_count,
+        buyer_entries, buyer_logged_count = extract_new_chat_entries(
+            observation.buyer_conversation_history,
+            buyer_logged_count,
         )
-        seller_logged_count = log_new_chat_entries(
-            step=step,
-            channel="seller",
-            history=observation.seller_conversation_history,
-            start_idx=seller_logged_count,
+        seller_entries, seller_logged_count = extract_new_chat_entries(
+            observation.seller_conversation_history,
+            seller_logged_count,
         )
 
-        log_step(
+        log_step_report(
             step=step,
             action=action,
+            expected_action=expected_action,
+            model_raw_response=model_raw_response,
+            model_debug_explanation=model_debug_explanation,
+            buyer_entries=buyer_entries,
+            seller_entries=seller_entries,
             reward=float(result.reward or 0.0),
-            done=result.done,
-            status=observation.status,
-            phase=observation.phase,
             total_reward=float(observation.total_reward),
-            bookings=len(observation.booked_visits),
-            violations=len(observation.violations),
+            status=observation.status,
+            done=result.done,
+            tool_result=observation.last_tool_result,
             source=source,
             message=observation.message,
             error=error,

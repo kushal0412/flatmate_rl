@@ -11,13 +11,17 @@ except Exception as e:  # pragma: no cover
     raise ImportError("openenv is required. Install dependencies with `uv sync`.") from e
 
 try:
+    from flatmate_rl.env_config import load_repo_env
     from flatmate_rl.models import FlatmateRlAction, FlatmateRlObservation
     from flatmate_rl.server.gradio_ui import build_flatmate_gradio_app
     from flatmate_rl.server.flatmate_rl_environment import FlatmateRlEnvironment
 except Exception:
+    from env_config import load_repo_env
     from models import FlatmateRlAction, FlatmateRlObservation
     from server.gradio_ui import build_flatmate_gradio_app
     from server.flatmate_rl_environment import FlatmateRlEnvironment
+
+load_repo_env()
 
 
 app = create_web_interface_app(

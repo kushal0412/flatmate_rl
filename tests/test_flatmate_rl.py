@@ -4,11 +4,16 @@ import importlib
 
 from flatmate_rl.models import FlatmateRlAction
 from flatmate_rl.server.flatmate_rl_environment import FlatmateRlEnvironment
-from flatmate_rl.server.heuristic_policy import autopolicy_next_request
+from flatmate_rl.server.heuristic_policy import autopolicy_next_request, expected_policy_action
 from flatmate_rl.server.scenarios import POSTS, SCENARIOS
 
 
 def _tool(env: FlatmateRlEnvironment, name: str, **kwargs):
+    scenario_id = env.state.scenario_id or getattr(getattr(env, "_episode", None), "_scenario", {}).get("task_id", "")
+    if not kwargs and name == "store_user_details":
+        kwargs = dict(SCENARIOS[scenario_id]["scenario_creation_config"]["expected_answers"])
+    if not kwargs and name == "store_seller_details":
+        kwargs = dict(SCENARIOS[scenario_id]["scenario_creation_config"]["followup_seller_expected_answers"])
     return env.step(
         FlatmateRlAction(
             action_type="tool_call",
@@ -177,7 +182,7 @@ def test_heuristic_policy_progresses_after_confirmation_in_single_visit() -> Non
     obs = env.reset(scenario_id="task_visit_single")
 
     for _ in range(12):
-        payload = autopolicy_next_request("task_visit_single", obs.model_dump())
+        payload = expected_policy_action("task_visit_single", obs.model_dump())
         assert payload is not None
         obs = env.step(FlatmateRlAction.model_validate(payload))
         if obs.done:
@@ -196,7 +201,8 @@ def test_expected_flow_violation_gets_large_penalty() -> None:
     _tool(env, "search_posts")
     wrong_next_step = _tool(env, "search_posts")
 
-    assert wrong_next_step.done is False
+    assert wrong_next_step.done is True
+    assert wrong_next_step.status == "failed"
     assert wrong_next_step.step_reward == -9.9
     assert "expected flow violation" in wrong_next_step.message.lower()
     assert "expected_flow_violation" in wrong_next_step.violations
@@ -211,6 +217,8 @@ def test_seller_followup_wrong_step_gets_large_penalty() -> None:
     _tool(env, "search_posts")
     wrong_transition = _tool(env, "match_location_preference", post_ids=["post_131"])
 
+    assert wrong_transition.done is True
+    assert wrong_transition.status == "failed"
     assert wrong_transition.step_reward == -9.9
     assert "expected next step" in wrong_transition.message.lower()
     assert "expected_flow_violation" in wrong_transition.violations
@@ -255,9 +263,13 @@ def test_hidden_flex_requires_alternative_slot_to_unlock_backup_availability() -
     obs = env.reset(scenario_id="task_visit_single_hidden_flex")
     assert "Tuesday after 6pm" in obs.last_user_message
 
-    obs = _msg(env, "Can you confirm your dietary preference?")
+    obs = _msg(env, "Please share your dietary preference.")
     assert obs.last_user_message == "I’m non-vegetarian."
-
+    _tool(env, "store_user_details")
+    _tool(env, "search_posts")
+    _tool(env, "match_location_preference", post_ids=["post_023", "post_052"])
+    _tool(env, "get_commute_time", post_ids=["post_023", "post_052"])
+    _tool(env, "check_calendar_slots", post_ids=["post_023", "post_052"])
     obs = _msg(env, "No Tuesday slot matches. I can offer Saturday 1pm or Sunday 5pm instead.")
     assert "confirm" in obs.last_user_message.lower()
     assert "Sunday 5pm" in obs.last_user_message or "Saturday 1pm" in obs.last_user_message
@@ -265,25 +277,17 @@ def test_hidden_flex_requires_alternative_slot_to_unlock_backup_availability() -
 
 def test_multi_visit_scenario_books_two_visits() -> None:
     env = FlatmateRlEnvironment()
-    env.reset(scenario_id="task_visit_multi")
+    obs = env.reset(scenario_id="task_visit_multi")
 
-    _msg(env, "Please share your dietary preference and visit availability.")
-    _tool(env, "store_user_details")
-    _tool(env, "search_posts")
-    _tool(env, "match_location_preference", post_ids=["post_031", "post_052"])
-    _tool(env, "get_commute_time", post_ids=["post_031", "post_052"])
-    _tool(env, "check_calendar_slots", post_ids=["post_031", "post_052"])
-    obs = _msg(env, "I shortlisted post_031 at tomorrow 7pm and post_052 at Sunday 4pm. Which listings do you want to pursue?")
-    assert obs.selected_posts == ["post_031", "post_052"]
-    _msg(env, "Please confirm tomorrow 7pm for post_031.")
-    _tool(env, "contact_poster", post_id="post_031", time_text="tomorrow 7pm")
-    _tool(env, "book_viewing", post_id="post_031", time_text="tomorrow 7pm")
-    _msg(env, "Please confirm Sunday 4pm for post_052.")
-    _tool(env, "contact_poster", post_id="post_052", time_text="Sunday 4pm")
-    final_obs = _tool(env, "book_viewing", post_id="post_052", time_text="Sunday 4pm")
+    for _ in range(20):
+        payload = expected_policy_action("task_visit_multi", obs.model_dump())
+        assert payload is not None
+        obs = env.step(FlatmateRlAction.model_validate(payload))
+        if obs.done:
+            break
 
-    assert final_obs.done is True
-    assert len(final_obs.booked_visits) == 2
+    assert obs.done is True
+    assert len(obs.booked_visits) == 2
 
 
 def test_seller_followup_scenario_schedules_dynamic_visit() -> None:

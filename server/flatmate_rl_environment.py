@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from uuid import uuid4
 
 from openenv.core.env_server.interfaces import Environment
@@ -21,8 +22,9 @@ class FlatmateRlEnvironment(Environment):
 
     def __init__(self) -> None:
         super().__init__()
+        strict_eval_mode = os.getenv("STRICT_EVAL_MODE", "").lower() in {"1", "true", "yes", "on"}
         self._state = FlatmateRlState(episode_id=str(uuid4()), step_count=0)
-        self._episode = FlatmateEpisode()
+        self._episode = FlatmateEpisode(strict_eval_mode=strict_eval_mode)
 
     def reset(self, scenario_id: str | None = None, seed: int | None = None) -> FlatmateRlObservation:
         del seed

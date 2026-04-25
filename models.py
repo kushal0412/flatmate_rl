@@ -59,6 +59,7 @@ class FlatmateRlObservation(Observation):
     step_reward: float = Field(default=0.0, description="Reward from the most recent step.")
     total_reward: float = Field(default=0.0, description="Cumulative reward for the episode.")
     message: str = Field(default="", description="Human-readable step summary.")
+    feedback_summary: str = Field(default="", description="Broker-facing guidance derived from the latest state or tool result.")
 
 
 class FlatmateRlState(State):

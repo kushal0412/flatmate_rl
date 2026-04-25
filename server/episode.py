@@ -10,11 +10,11 @@ from typing import Any
 
 try:
     from ..models import FlatmateRlAction, FlatmateRlObservation, FlatmateRlState
-    from .heuristic_policy import autopolicy_next_request
+    from .heuristic_policy import expected_policy_action
     from .scenarios import POSTS, SCENARIOS
 except ImportError:
     from models import FlatmateRlAction, FlatmateRlObservation, FlatmateRlState
-    from server.heuristic_policy import autopolicy_next_request
+    from server.heuristic_policy import expected_policy_action
     from server.scenarios import POSTS, SCENARIOS
 
 
@@ -214,7 +214,7 @@ class FlatmateEpisode:
     def _expected_flow_action(self) -> FlatmateRlAction | None:
         if self._last_observation is None:
             return None
-        payload = autopolicy_next_request(self._scenario["task_id"], self._last_observation.model_dump())
+        payload = expected_policy_action(self._scenario["task_id"], self._last_observation.model_dump())
         if payload is None:
             return None
         return FlatmateRlAction.model_validate(payload)
@@ -255,9 +255,14 @@ class FlatmateEpisode:
 
         self._record_violation("expected_flow_violation")
         self._total_reward -= 10.0
+        self._done = True
+        self._state.done = True
+        self._state.status = "failed"
         self._state.total_reward = self._total_reward
         self._state.tool_trace = deepcopy(self._tool_trace)
         payload = observation.model_dump()
+        payload["status"] = "failed"
+        payload["done"] = True
         payload["violations"] = list(self._violations)
         payload["step_reward"] = float(payload.get("step_reward", 0.0)) - 10.0
         payload["total_reward"] = self._total_reward

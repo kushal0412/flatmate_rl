@@ -15,11 +15,15 @@ except ImportError:  # pragma: no cover
 from openenv.core.env_server.serialization import serialize_observation
 
 try:
+    from ..env_config import load_repo_env
     from .scenarios import POSTS, SCENARIOS
     from .heuristic_policy import autopolicy_next_request
 except ImportError:
+    from env_config import load_repo_env
     from server.scenarios import POSTS, SCENARIOS
     from server.heuristic_policy import autopolicy_next_request
+
+load_repo_env()
 
 
 BROKER_MODELS = ["heuristic_debug_policy"]
