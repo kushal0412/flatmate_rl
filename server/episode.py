@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import os
 from copy import deepcopy
+import json
+import re
 from typing import Any
 
 try:
     from ..models import FlatmateRlAction, FlatmateRlObservation, FlatmateRlState
+    from .heuristic_policy import autopolicy_next_request
     from .scenarios import POSTS, SCENARIOS
 except ImportError:
     from models import FlatmateRlAction, FlatmateRlObservation, FlatmateRlState
+    from server.heuristic_policy import autopolicy_next_request
     from server.scenarios import POSTS, SCENARIOS
 
 
@@ -58,7 +63,10 @@ FIELD_TO_PROFILE_KEY = {
 class FlatmateEpisode:
     """Stateful deterministic simulator for broker-style visit scheduling."""
 
-    def __init__(self) -> None:
+    def __init__(self, strict_eval_mode: bool | None = None) -> None:
+        if strict_eval_mode is None:
+            strict_eval_mode = os.getenv("STRICT_EVAL_MODE", "").lower() in {"1", "true", "yes", "on"}
+        self._strict_eval_mode = strict_eval_mode
         self._state = FlatmateRlState()
         self._scenario: dict[str, Any] = {}
         self._posts: dict[str, dict[str, Any]] = {}
@@ -80,6 +88,9 @@ class FlatmateEpisode:
         self._done = False
         self._last_user_message = ""
         self._total_reward = 0.0
+        self._last_action_signature = ""
+        self._repeated_action_streak = 0
+        self._last_observation: FlatmateRlObservation | None = None
 
     def reset(self, scenario_id: str | None = None) -> FlatmateRlObservation:
         selected = scenario_id or "task_visit_single"
@@ -102,6 +113,9 @@ class FlatmateEpisode:
         self._searched = False
         self._done = False
         self._total_reward = 0.0
+        self._last_action_signature = ""
+        self._repeated_action_streak = 0
+        self._last_observation = None
 
         gathered_fields = self._initial_buyer_fields()
         initial_message = self._scenario["initial_user_message"]
@@ -141,9 +155,12 @@ class FlatmateEpisode:
                 done=True,
             )
         self._state.step_count += 1
+        expected_action = self._expected_flow_action()
         if action.action_type == "assistant_message":
-            return self._handle_assistant_message(action.assistant_message)
-        return self._handle_tool_call(action.tool_name, action.tool_arguments)
+            observation = self._handle_assistant_message(action.assistant_message)
+        else:
+            observation = self._handle_tool_call(action.tool_name, action.tool_arguments)
+        return self._apply_expected_flow_penalty(observation, action, expected_action)
 
     def state(self) -> FlatmateRlState:
         return self._state
@@ -194,6 +211,97 @@ class FlatmateEpisode:
         if text not in self._violations:
             self._violations.append(text)
 
+    def _expected_flow_action(self) -> FlatmateRlAction | None:
+        if self._last_observation is None:
+            return None
+        payload = autopolicy_next_request(self._scenario["task_id"], self._last_observation.model_dump())
+        if payload is None:
+            return None
+        return FlatmateRlAction.model_validate(payload)
+
+    def _actions_match_expected_flow(self, actual: FlatmateRlAction, expected: FlatmateRlAction | None) -> bool:
+        if expected is None:
+            return True
+        if actual.action_type != expected.action_type:
+            return False
+        if actual.action_type == "assistant_message":
+            return actual.assistant_message.strip() == expected.assistant_message.strip()
+        return actual.tool_name == expected.tool_name and actual.tool_arguments == expected.tool_arguments
+
+    def _describe_action(self, action: FlatmateRlAction | None) -> str:
+        if action is None:
+            return "null"
+        if action.action_type == "assistant_message":
+            payload = {
+                "action_type": action.action_type,
+                "assistant_message": action.assistant_message,
+            }
+        else:
+            payload = {
+                "action_type": action.action_type,
+                "tool_name": action.tool_name,
+                "tool_arguments": action.tool_arguments,
+            }
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+    def _apply_expected_flow_penalty(
+        self,
+        observation: FlatmateRlObservation,
+        actual_action: FlatmateRlAction,
+        expected_action: FlatmateRlAction | None,
+    ) -> FlatmateRlObservation:
+        if self._actions_match_expected_flow(actual_action, expected_action):
+            return observation
+
+        self._record_violation("expected_flow_violation")
+        self._total_reward -= 10.0
+        self._state.total_reward = self._total_reward
+        self._state.tool_trace = deepcopy(self._tool_trace)
+        payload = observation.model_dump()
+        payload["violations"] = list(self._violations)
+        payload["step_reward"] = float(payload.get("step_reward", 0.0)) - 10.0
+        payload["total_reward"] = self._total_reward
+        payload["reward"] = float(payload.get("reward", 0.0)) - 10.0
+        payload["message"] = (
+            f"{observation.message} Expected flow violation. "
+            f"Expected next step `{self._describe_action(expected_action)}` but received `{self._describe_action(actual_action)}`."
+        ).strip()
+        raw_penalized = FlatmateRlObservation.model_validate(payload)
+        self._last_observation = raw_penalized
+        if self._strict_eval_mode:
+            return self._strict_eval_observation(raw_penalized)
+        return raw_penalized
+
+    def _action_signature(self, action_type: str, content: str = "", tool_name: str = "", arguments: dict[str, Any] | None = None) -> str:
+        if action_type == "assistant_message":
+            normalized_message = re.sub(r"\s+", " ", content.strip().lower())
+            return f"assistant:{normalized_message}"
+        normalized_args = json.dumps(arguments or {}, ensure_ascii=False, sort_keys=True)
+        return f"tool:{tool_name}:{normalized_args}"
+
+    def _apply_loop_penalty(self, signature: str, reward: float, message: str, status: str, done: bool) -> tuple[float, str, str, bool]:
+        if signature == self._last_action_signature:
+            self._repeated_action_streak += 1
+        else:
+            self._last_action_signature = signature
+            self._repeated_action_streak = 1
+
+        if self._repeated_action_streak < 3:
+            return reward, message, status, done
+
+        penalty = -0.5 * (self._repeated_action_streak - 2)
+        self._record_violation("action_loop_detected")
+        reward += penalty
+        message = f"{message} Loop penalty applied for repeating the same action {self._repeated_action_streak} times."
+
+        if self._repeated_action_streak >= 4:
+            self._done = True
+            self._state.done = True
+            self._state.status = "failed"
+            return reward, "Episode terminated due to repeated identical actions.", "failed", True
+
+        return reward, message, status, done
+
     def _handle_assistant_message(self, message: str) -> FlatmateRlObservation:
         phase_before_message = self._state.phase
         self._history.append({"role": "assistant", "content": message})
@@ -235,10 +343,17 @@ class FlatmateEpisode:
             self._buyer_history.append({"role": "user", "content": response})
         done = self._maybe_finish_from_message()
         status = "completed" if done else "user_response"
+        reward, response_message, status, done = self._apply_loop_penalty(
+            signature=self._action_signature("assistant_message", content=message),
+            reward=reward,
+            message="User responded.",
+            status=status,
+            done=done,
+        )
         self._total_reward += reward
         return self._observation(
             status=status,
-            message="User responded.",
+            message=response_message,
             current_user_request=response,
             last_tool_result={},
             reward=reward,
@@ -385,12 +500,19 @@ class FlatmateEpisode:
                 "message": result.get("message", ""),
             }
         )
-        self._total_reward += reward
         done = self._done
         status = "completed" if done else "tool_result"
+        reward, step_message, status, done = self._apply_loop_penalty(
+            signature=self._action_signature("tool_call", tool_name=tool_name, arguments=arguments),
+            reward=reward,
+            message=result.get("message", ""),
+            status=status,
+            done=done,
+        )
+        self._total_reward += reward
         return self._observation(
             status=status,
-            message=result.get("message", ""),
+            message=step_message,
             current_user_request=self._last_user_message,
             last_tool_result=result,
             reward=reward,
@@ -419,7 +541,7 @@ class FlatmateEpisode:
         if missing:
             return {"tool": "store_user_details", "success": False, "message": f"Missing buyer fields: {', '.join(missing)}."}
         self._state.buyer_profile_stored = True
-        return {"tool": "store_user_details", "success": True, "message": "Buyer profile stored.", "stored_profile": deepcopy(self._scenario["scenario_creation_config"]["expected_answers"])}
+        return {"tool": "store_user_details", "success": True, "message": "Buyer profile stored."}
 
     def _tool_search_posts(self, arguments: dict[str, Any]) -> dict[str, Any]:
         del arguments
@@ -599,6 +721,61 @@ class FlatmateEpisode:
     def _profile_stored(self) -> bool:
         return self._state.seller_profile_stored if self._state.phase == "seller" else self._state.buyer_profile_stored
 
+    def _sanitize_tool_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        sanitized = deepcopy(result)
+        sanitized.pop("stored_profile", None)
+        return sanitized
+
+    def _feedback_summary(self, status: str, message: str, last_tool_result: dict[str, Any]) -> str:
+        tool_name = str(last_tool_result.get("tool", ""))
+        tool_message = str(last_tool_result.get("message", "")).strip()
+        if tool_name == "store_user_details" and "Missing buyer fields:" in tool_message:
+            missing = tool_message.split("Missing buyer fields:", 1)[1].strip()
+            return f"Ask the buyer for these missing fields before storing details: {missing}."
+        if tool_name == "store_seller_details" and "Missing seller fields:" in tool_message:
+            missing = tool_message.split("Missing seller fields:", 1)[1].strip()
+            return f"Ask the seller for these missing fields before storing details: {missing}."
+        if tool_name == "search_posts" and last_tool_result.get("success"):
+            return "Search results are ready. Evaluate matching listings next."
+        if tool_name == "check_calendar_slots" and last_tool_result.get("success"):
+            return "Calendar slots are available. Ask the buyer to confirm one matching time before contacting the poster."
+        if tool_name == "contact_poster" and last_tool_result.get("success"):
+            return "The poster has confirmed the requested time. Book only after the buyer explicitly confirms the same slot."
+        if tool_name == "book_viewing" and last_tool_result.get("success"):
+            return "A viewing has been booked successfully."
+        if "action_loop_detected" in self._violations:
+            return "Repeated identical actions triggered loop protection. Change strategy instead of repeating the same step."
+        if "expected_flow_violation" in self._violations:
+            return "The broker deviated from the scenario's expected flow. Follow the next required action exactly."
+        if self._state.phase == "buyer" and not self._state.buyer_profile_stored:
+            missing = self._remaining_fields()
+            if missing:
+                return f"Collect the buyer information still needed to continue: {', '.join(missing)}."
+        if self._state.phase == "seller" and not self._state.seller_profile_stored:
+            missing = self._remaining_fields()
+            if missing:
+                return f"Collect the seller information still needed to continue: {', '.join(missing)}."
+        if message:
+            return message
+        if status == "ready":
+            return "Review the visible conversation and take the next valid step."
+        return ""
+
+    def _strict_eval_observation(self, observation: FlatmateRlObservation) -> FlatmateRlObservation:
+        payload = observation.model_dump()
+        payload["scenario_id"] = ""
+        payload["scenario_label"] = ""
+        payload["difficulty"] = ""
+        payload["gathered_fields"] = []
+        payload["remaining_required_fields"] = []
+        payload["violations"] = []
+        payload["tool_trace"] = []
+        payload["step_reward"] = 0.0
+        payload["total_reward"] = 0.0
+        payload["last_tool_result"] = self._sanitize_tool_result(payload["last_tool_result"])
+        payload["tool_results"] = [self._sanitize_tool_result(item) for item in payload["tool_results"]]
+        return FlatmateRlObservation.model_validate(payload)
+
     def _observation(
         self,
         *,
@@ -612,7 +789,7 @@ class FlatmateEpisode:
         self._state.status = status
         self._state.tool_trace = deepcopy(self._tool_trace)
         self._state.total_reward = self._total_reward
-        return FlatmateRlObservation(
+        observation = FlatmateRlObservation(
             status=status,
             scenario_id=self._scenario["task_id"],
             scenario_label=self._scenario["label"],
@@ -638,6 +815,11 @@ class FlatmateEpisode:
             step_reward=reward,
             total_reward=self._total_reward,
             message=message,
+            feedback_summary=self._feedback_summary(status, message, last_tool_result),
             reward=reward,
             done=done,
         )
+        self._last_observation = observation
+        if self._strict_eval_mode:
+            return self._strict_eval_observation(observation)
+        return observation

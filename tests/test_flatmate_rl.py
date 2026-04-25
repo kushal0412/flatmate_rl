@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+
 from flatmate_rl.models import FlatmateRlAction
 from flatmate_rl.server.flatmate_rl_environment import FlatmateRlEnvironment
 from flatmate_rl.server.heuristic_policy import autopolicy_next_request
@@ -87,6 +89,55 @@ def test_search_before_store_user_details_fails() -> None:
     assert "store_user_details must be called before search_posts" in result.last_tool_result["message"]
 
 
+def test_store_user_details_does_not_return_expected_answers_payload() -> None:
+    env = FlatmateRlEnvironment()
+    env.reset(scenario_id="task_visit_single")
+
+    _msg(env, "Please share your dietary preference and visit availability.")
+    result = _tool(env, "store_user_details")
+
+    assert result.last_tool_result == {
+        "tool": "store_user_details",
+        "success": True,
+        "message": "Buyer profile stored.",
+    }
+
+
+def test_strict_eval_mode_hides_scenario_metadata_and_reward(monkeypatch) -> None:
+    monkeypatch.setenv("STRICT_EVAL_MODE", "1")
+
+    environment_module = importlib.import_module("flatmate_rl.server.flatmate_rl_environment")
+    environment_module = importlib.reload(environment_module)
+    env = environment_module.FlatmateRlEnvironment()
+
+    observation = env.reset(scenario_id="task_visit_single")
+
+    assert observation.scenario_id == ""
+    assert observation.scenario_label == ""
+    assert observation.difficulty == ""
+    assert observation.gathered_fields == []
+    assert observation.remaining_required_fields == []
+    assert observation.violations == []
+    assert observation.tool_trace == []
+    assert observation.total_reward == 0.0
+    assert "diet" in observation.feedback_summary
+    assert "visit_availability" in observation.feedback_summary
+
+    _msg(env, "Please share your dietary preference and visit availability.")
+    result = _tool(env, "store_user_details")
+
+    assert result.last_tool_result == {
+        "tool": "store_user_details",
+        "success": True,
+        "message": "Buyer profile stored.",
+    }
+    assert result.total_reward == 0.0
+    assert result.tool_trace == []
+
+    monkeypatch.delenv("STRICT_EVAL_MODE", raising=False)
+    importlib.reload(environment_module)
+
+
 def test_single_visit_scenario_books_one_visit() -> None:
     env = FlatmateRlEnvironment()
     env.reset(scenario_id="task_visit_single")
@@ -134,6 +185,69 @@ def test_heuristic_policy_progresses_after_confirmation_in_single_visit() -> Non
 
     assert obs.done is True
     assert obs.booked_visits == [{"post_id": "post_023", "time": "Saturday 11am"}]
+
+
+def test_expected_flow_violation_gets_large_penalty() -> None:
+    env = FlatmateRlEnvironment()
+    env.reset(scenario_id="task_visit_single")
+
+    _msg(env, "Please share your dietary preference and visit availability.")
+    _tool(env, "store_user_details")
+    _tool(env, "search_posts")
+    wrong_next_step = _tool(env, "search_posts")
+
+    assert wrong_next_step.done is False
+    assert wrong_next_step.step_reward == -9.9
+    assert "expected flow violation" in wrong_next_step.message.lower()
+    assert "expected_flow_violation" in wrong_next_step.violations
+
+
+def test_seller_followup_wrong_step_gets_large_penalty() -> None:
+    env = FlatmateRlEnvironment()
+    env.reset(scenario_id="task_visit_single_seller_followup")
+
+    _msg(env, "Please share your dietary preference.")
+    _tool(env, "store_user_details")
+    _tool(env, "search_posts")
+    wrong_transition = _tool(env, "match_location_preference", post_ids=["post_131"])
+
+    assert wrong_transition.step_reward == -9.9
+    assert "expected next step" in wrong_transition.message.lower()
+    assert "expected_flow_violation" in wrong_transition.violations
+
+
+def test_heuristic_policy_recovers_from_strict_eval_feedback() -> None:
+    sanitized_observation = {
+        "done": False,
+        "phase": "buyer",
+        "buyer_profile_stored": False,
+        "seller_profile_stored": False,
+        "remaining_required_fields": [],
+        "feedback_summary": "Ask the buyer for these missing fields before storing details: diet, visit_availability.",
+        "message": "Missing buyer fields: diet, visit_availability.",
+        "last_tool_result": {
+            "tool": "store_user_details",
+            "success": False,
+            "message": "Missing buyer fields: diet, visit_availability.",
+        },
+        "booked_visits": [],
+        "selected_posts": [],
+        "tool_trace": [],
+        "buyer_conversation_history": [
+            {
+                "role": "user",
+                "content": "Hi, I'm looking for a flatmate-share near Goregaon East.",
+            }
+        ],
+        "status": "tool_result",
+    }
+
+    action = autopolicy_next_request("task_visit_single", sanitized_observation)
+
+    assert action == {
+        "action_type": "assistant_message",
+        "assistant_message": "Please share your dietary preference and visit availability.",
+    }
 
 
 def test_hidden_flex_requires_alternative_slot_to_unlock_backup_availability() -> None:
