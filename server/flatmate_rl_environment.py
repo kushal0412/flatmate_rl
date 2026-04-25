@@ -27,9 +27,8 @@ class FlatmateRlEnvironment(Environment):
         self._episode = FlatmateEpisode(strict_eval_mode=strict_eval_mode)
 
     def reset(self, scenario_id: str | None = None, seed: int | None = None) -> FlatmateRlObservation:
-        del seed
         self._state = FlatmateRlState(episode_id=str(uuid4()), step_count=0)
-        observation = self._episode.reset(scenario_id=scenario_id)
+        observation = self._episode.reset(scenario_id=scenario_id, seed=seed)
         self._sync_state(observation)
         return observation
 

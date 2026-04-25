@@ -84,6 +84,25 @@ def test_reset_exposes_initial_buyer_message() -> None:
     assert observation.remaining_required_fields == ["diet", "visit_availability"]
 
 
+def test_seeded_reset_varies_values_without_changing_episode_flow() -> None:
+    default_env = FlatmateRlEnvironment()
+    default_obs = default_env.reset(scenario_id="task_visit_single")
+
+    seeded_env = FlatmateRlEnvironment()
+    seeded_obs = seeded_env.reset(scenario_id="task_visit_single", seed=123)
+    seeded_episode = seeded_env._episode  # type: ignore[attr-defined]
+
+    assert seeded_obs.scenario_id == default_obs.scenario_id
+    assert seeded_obs.remaining_required_fields == default_obs.remaining_required_fields
+    assert seeded_episode._scenario["task_post_ids"] == SCENARIOS["task_visit_single"]["task_post_ids"]
+    assert seeded_episode._scenario["ground_truth"] == SCENARIOS["task_visit_single"]["ground_truth"]
+    assert seeded_episode._scenario["buyer_profile"]["budget_max"] != SCENARIOS["task_visit_single"]["buyer_profile"]["budget_max"]
+    assert (
+        seeded_episode._scenario["scenario_creation_config"]["expected_answers"]["budget_max"]
+        == seeded_episode._scenario["buyer_profile"]["budget_max"]
+    )
+
+
 def test_search_before_store_user_details_fails() -> None:
     env = FlatmateRlEnvironment()
     env.reset(scenario_id="task_visit_single")

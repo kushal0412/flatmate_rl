@@ -11,10 +11,12 @@ from typing import Any
 try:
     from ..models import FlatmateRlAction, FlatmateRlObservation, FlatmateRlState
     from .heuristic_policy import expected_policy_action
+    from .scenario_variants import apply_seed_variant
     from .scenarios import POSTS, SCENARIOS
 except ImportError:
     from models import FlatmateRlAction, FlatmateRlObservation, FlatmateRlState
     from server.heuristic_policy import expected_policy_action
+    from server.scenario_variants import apply_seed_variant
     from server.scenarios import POSTS, SCENARIOS
 
 
@@ -118,10 +120,11 @@ class FlatmateEpisode:
         self._post_arrivals_fired: set[int] = set()
         self._available_post_ids: list[str] = []
 
-    def reset(self, scenario_id: str | None = None) -> FlatmateRlObservation:
+    def reset(self, scenario_id: str | None = None, seed: int | None = None) -> FlatmateRlObservation:
         selected = scenario_id or "task_visit_single"
-        self._scenario = deepcopy(SCENARIOS[selected])
-        self._posts = {post_id: deepcopy(POSTS[post_id]) for post_id in self._scenario["task_post_ids"]}
+        base_scenario = deepcopy(SCENARIOS[selected])
+        base_posts = {post_id: deepcopy(POSTS[post_id]) for post_id in base_scenario["task_post_ids"]}
+        self._scenario, self._posts = apply_seed_variant(base_scenario, base_posts, seed)
         self._tool_results = []
         self._tool_trace = []
         self._history = []
