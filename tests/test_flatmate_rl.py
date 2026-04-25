@@ -258,6 +258,30 @@ def test_legal_non_canonical_tool_after_store_can_continue() -> None:
     assert "non_canonical_order" in obs.violations
 
 
+def test_schema_valid_non_canonical_action_never_uses_legacy_flow_failure() -> None:
+    env = FlatmateRlEnvironment()
+    env.reset(scenario_id="task_visit_single")
+
+    _msg(env, "Please share your dietary preference and visit availability.")
+    _tool(env, "store_user_details")
+
+    obs = env.step(
+        FlatmateRlAction(
+            action_type="tool_call",
+            tool_name="match_location_preference",
+            tool_arguments={"post_ids": ["post_023", "post_031"]},
+        )
+    )
+
+    assert obs.done is False
+    assert obs.status == "tool_result"
+    assert obs.step_reward == -0.1
+    assert "expected_flow_violation" not in obs.violations
+    assert "Expected flow violation" not in obs.message
+    assert "non_canonical_order" in obs.violations
+    assert "non_canonical_order: expected search_posts, got match_location_preference" in obs.message
+
+
 def test_seller_followup_search_returns_no_visit_compatible_current_posts() -> None:
     env = FlatmateRlEnvironment()
     env.reset(scenario_id="task_visit_single_seller_followup")
