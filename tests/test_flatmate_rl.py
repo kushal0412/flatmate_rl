@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from broker_app.data import TASKS as BROKER_TASKS
-
 from flatmate_rl.models import FlatmateRlAction
 from flatmate_rl.server.flatmate_rl_environment import FlatmateRlEnvironment
 from flatmate_rl.server.heuristic_policy import autopolicy_next_request
-from flatmate_rl.server.scenarios import SCENARIOS
+from flatmate_rl.server.scenarios import POSTS, SCENARIOS
 
 
 def _tool(env: FlatmateRlEnvironment, name: str, **kwargs):
@@ -27,19 +25,45 @@ def _msg(env: FlatmateRlEnvironment, text: str):
     )
 
 
-def test_scenarios_keep_broker_app_task_metadata() -> None:
+def test_scenarios_are_self_consistent() -> None:
     for scenario_id, scenario in SCENARIOS.items():
-        broker = BROKER_TASKS[scenario_id]
-        assert scenario["label"] == broker["label"]
-        assert scenario["difficulty"] == broker["difficulty"]
-        assert scenario["task_post_ids"] == broker["task_post_ids"]
-        assert scenario["ground_truth"]["required_bookings"] == broker["ground_truth"]["required_bookings"]
-        assert scenario["scenario_creation_config"]["expected_answers"] == broker["scenario_creation_config"]["expected_answers"]
+        assert scenario["task_id"] == scenario_id
+        assert scenario["label"]
+        assert scenario["difficulty"] in {"medium", "hard"}
+        assert scenario["initial_user_message"]
+
+        assert scenario["task_post_ids"]
+        assert len(scenario["task_post_ids"]) == len(set(scenario["task_post_ids"]))
+        assert all(post_id in POSTS for post_id in scenario["task_post_ids"])
+
+        ground_truth = scenario["ground_truth"]
+        expected_answers = scenario["scenario_creation_config"]["expected_answers"]
+
+        assert ground_truth["required_bookings"] >= 1
+        assert ground_truth["required_tool_calls"]
+        assert ground_truth["required_info"]
+        assert ground_truth["optimal_posts"]
+        assert set(ground_truth["optimal_posts"]).issubset(set(scenario["task_post_ids"]) | {"post_dynamic_followup_1"})
+        assert set(ground_truth["acceptable_posts"]).issubset(set(scenario["task_post_ids"]))
+        assert set(ground_truth["dealbreaker_posts"]).issubset(set(scenario["task_post_ids"]))
+
+        assert expected_answers["user_type"] == "buyer"
+        assert expected_answers["user_sub_type"] == "flat"
+        assert expected_answers["budget_max"] == scenario["buyer_profile"]["budget_max"]
+        assert expected_answers["dietary"] == scenario["buyer_profile"]["dietary"]
+        assert expected_answers["areas"] == scenario["buyer_profile"]["areas"]
+        assert expected_answers["occupation"] == scenario["buyer_profile"]["occupation"]
+        assert expected_answers["visit_availability"] == scenario["buyer_profile"]["visit_availability"]
+
         if scenario_id == "task_visit_single_seller_followup":
+            assert scenario["seller_profile"] is not None
             assert (
-                scenario["scenario_creation_config"]["followup_seller_expected_answers"]
-                == broker["scenario_creation_config"]["followup_seller_expected_answers"]
+                scenario["scenario_creation_config"]["followup_seller_expected_answers"]["calendar_slots"]
+                == scenario["seller_profile"]["calendar_slots"]
             )
+            assert scenario["scenario_creation_config"]["followup_seller_expected_answers"]["area"] == scenario["seller_profile"]["area"]
+        else:
+            assert scenario["seller_profile"] is None
 
 
 def test_reset_exposes_initial_buyer_message() -> None:
