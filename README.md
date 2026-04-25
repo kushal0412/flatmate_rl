@@ -118,6 +118,7 @@ The broker-side tool space includes these buyer-phase tools:
 
 - `store_user_details`
 - `search_posts`
+- `close_buyer_conversation`
 - `match_location_preference`
 - `get_commute_time`
 - `check_calendar_slots`

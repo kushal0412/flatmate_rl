@@ -21,6 +21,7 @@ except ImportError:
 BUYER_TOOLS = [
     "store_user_details",
     "search_posts",
+    "close_buyer_conversation",
     "match_location_preference",
     "get_commute_time",
     "check_calendar_slots",
@@ -225,8 +226,8 @@ class FlatmateEpisode:
         if actual.action_type != expected.action_type:
             return False
         if actual.action_type == "assistant_message":
-            return actual.assistant_message.strip() == expected.assistant_message.strip()
-        return actual.tool_name == expected.tool_name and actual.tool_arguments == expected.tool_arguments
+            return bool(actual.assistant_message.strip())
+        return actual.tool_name == expected.tool_name
 
     def _describe_action(self, action: FlatmateRlAction | None) -> str:
         if action is None:
@@ -325,16 +326,6 @@ class FlatmateEpisode:
                     self._state.gathered_fields.append("listing_choices")
                 self._state.selected_posts = ["post_031", "post_052"]
                 reward = 0.2
-            elif self._scenario["task_id"] == "task_visit_single_seller_followup" and (
-                "none of the current listings fit" in lowered or "no current listings fit" in lowered
-            ):
-                response = (
-                    "Understood, none of those fit my weekend availability. "
-                    + self._scenario["seller_initial_message"]
-                )
-                self._state.phase = "seller"
-                self._state.gathered_fields = ["area", "rent", "listing_type", "calendar_slots"]
-                reward = 0.1
             else:
                 response = self._buyer_response(message)
         else:
@@ -563,6 +554,39 @@ class FlatmateEpisode:
                 continue
             results.append(post_id)
         return {"tool": "search_posts", "success": True, "message": f"Found {len(results)} matching posts.", "post_ids": results}
+
+    def _tool_close_buyer_conversation(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        del arguments
+        if self._scenario["task_id"] != "task_visit_single_seller_followup":
+            return {
+                "tool": "close_buyer_conversation",
+                "success": False,
+                "message": "Buyer conversation can only be closed this way in seller follow-up scenarios.",
+            }
+        if not self._searched:
+            return {
+                "tool": "close_buyer_conversation",
+                "success": False,
+                "message": "Search existing posts before closing the buyer conversation.",
+            }
+
+        buyer_closure = (
+            "None of the current listings fit your weekend availability. "
+            "I will follow up if a suitable listing comes in."
+        )
+        seller_message = self._scenario["seller_initial_message"]
+        self._history.append({"role": "assistant", "content": buyer_closure})
+        self._buyer_history.append({"role": "assistant", "content": buyer_closure})
+        self._history.append({"role": "user", "content": seller_message})
+        self._seller_history.append({"role": "user", "content": seller_message})
+        self._last_user_message = seller_message
+        self._state.phase = "seller"
+        self._state.gathered_fields = ["area", "rent", "listing_type", "calendar_slots"]
+        return {
+            "tool": "close_buyer_conversation",
+            "success": True,
+            "message": "Buyer conversation closed; seller follow-up started.",
+        }
 
     def _tool_match_location_preference(self, arguments: dict[str, Any]) -> dict[str, Any]:
         post_ids = list(arguments.get("post_ids", []))

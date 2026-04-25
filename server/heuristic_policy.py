@@ -117,7 +117,7 @@ def autopolicy_next_request(task_id: str, observation: dict[str, Any]) -> dict[s
                 return {"action_type": "tool_call", "tool_name": "store_user_details", "tool_arguments": {}}
             if not has_tool("search_posts"):
                 return {"action_type": "tool_call", "tool_name": "search_posts", "tool_arguments": {}}
-            return {"action_type": "assistant_message", "assistant_message": "None of the current listings fit your weekend availability."}
+            return {"action_type": "tool_call", "tool_name": "close_buyer_conversation", "tool_arguments": {}}
 
         if not observation.get("buyer_profile_stored"):
             missing_prompt = _ask_for_missing_fields(sorted(remaining), phase=phase, task_id=task_id)

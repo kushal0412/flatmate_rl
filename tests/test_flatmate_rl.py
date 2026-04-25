@@ -224,6 +224,37 @@ def test_seller_followup_wrong_step_gets_large_penalty() -> None:
     assert "expected_flow_violation" in wrong_transition.violations
 
 
+def test_seller_followup_accepts_paraphrased_assistant_message() -> None:
+    env = FlatmateRlEnvironment()
+    env.reset(scenario_id="task_visit_single_seller_followup")
+
+    obs = _msg(
+        env,
+        "Could you please let me know about your dietary preferences? This will help me find the best match for you.",
+    )
+
+    assert obs.status == "user_response"
+    assert obs.done is False
+    assert obs.violations == []
+    assert "diet" in obs.gathered_fields
+
+
+def test_seller_followup_accepts_expected_tool_with_different_arguments() -> None:
+    env = FlatmateRlEnvironment()
+    env.reset(scenario_id="task_visit_single_seller_followup")
+
+    _msg(
+        env,
+        "Could you please let me know about your dietary preferences? This will help me find the best match for you.",
+    )
+    obs = _tool(env, "store_user_details", diet="non-vegetarian")
+
+    assert obs.status == "tool_result"
+    assert obs.done is False
+    assert obs.violations == []
+    assert obs.last_tool_result["success"] is True
+
+
 def test_heuristic_policy_recovers_from_strict_eval_feedback() -> None:
     sanitized_observation = {
         "done": False,
@@ -297,8 +328,10 @@ def test_seller_followup_scenario_schedules_dynamic_visit() -> None:
     _msg(env, "Please share your dietary preference.")
     _tool(env, "store_user_details")
     _tool(env, "search_posts")
-    transition = _msg(env, "None of the current listings fit your weekend availability.")
+    transition = _tool(env, "close_buyer_conversation")
     assert transition.phase == "seller"
+    assert "I will follow up if a suitable listing comes in" in transition.buyer_conversation_history[-1]["content"]
+    assert "listing a new flatmate-share opening" in transition.seller_conversation_history[-1]["content"]
     _msg(env, "Please share the household dietary setup and who the flat is for.")
     _tool(env, "store_seller_details")
     _tool(env, "match_location_preference", post_ids=["post_dynamic_followup_1"])
