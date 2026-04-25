@@ -224,6 +224,19 @@ def test_seller_followup_wrong_step_gets_large_penalty() -> None:
     assert "expected_flow_violation" in wrong_transition.violations
 
 
+def test_seller_followup_search_returns_no_visit_compatible_current_posts() -> None:
+    env = FlatmateRlEnvironment()
+    env.reset(scenario_id="task_visit_single_seller_followup")
+
+    _msg(env, "Please share your dietary preference.")
+    _tool(env, "store_user_details")
+    obs = _tool(env, "search_posts")
+
+    assert obs.last_tool_result["post_ids"] == []
+    assert obs.last_tool_result["rejected_for_slot_mismatch"] == ["post_131", "post_132"]
+    assert "No current listing fits" in obs.feedback_summary
+
+
 def test_seller_followup_accepts_paraphrased_assistant_message() -> None:
     env = FlatmateRlEnvironment()
     env.reset(scenario_id="task_visit_single_seller_followup")
@@ -253,6 +266,41 @@ def test_seller_followup_accepts_expected_tool_with_different_arguments() -> Non
     assert obs.done is False
     assert obs.violations == []
     assert obs.last_tool_result["success"] is True
+
+
+def test_seller_followup_match_tools_infer_dynamic_post_when_args_are_loose() -> None:
+    env = FlatmateRlEnvironment()
+    env.reset(scenario_id="task_visit_single_seller_followup")
+
+    _msg(env, "Please share your dietary preference.")
+    _tool(env, "store_user_details")
+    _tool(env, "search_posts")
+    _tool(env, "close_buyer_conversation")
+    _msg(env, "Please share the household dietary setup and who the flat is for.")
+    _tool(env, "store_seller_details", dietary="non-vegetarian", occupation_requirement="working professionals")
+
+    match_obs = _tool(env, "match_location_preference", area="Jogeshwari", rent=19500)
+    assert match_obs.last_tool_result["matches"] == {"post_dynamic_followup_1": {"match": True}}
+
+    slot_obs = _tool(env, "check_table_slot_matches", calendar_slots=["Saturday 4pm", "Sunday 5pm"])
+    assert slot_obs.last_tool_result["slot_matches"] == {
+        "post_dynamic_followup_1": ["Saturday 4pm", "Sunday 5pm"]
+    }
+
+    confirm_obs = _tool(
+        env,
+        "confirm_seller_match",
+        slot_matches={"post_dynamic_followup_1": ["Saturday 4pm", "Sunday 5pm"]},
+    )
+    assert confirm_obs.last_tool_result["success"] is True
+    assert confirm_obs.last_tool_result["time_text"] == "Sunday 5pm"
+
+    offer_obs = _tool(env, "offer_matched_listing_to_buyer", calendar_slots=["Saturday 4pm", "Sunday 5pm"])
+    assert offer_obs.last_tool_result["success"] is True
+
+    final_obs = _tool(env, "schedule_table_visit", calendar_slots=["Saturday 4pm", "Sunday 5pm"])
+    assert final_obs.done is True
+    assert final_obs.booked_visits == [{"post_id": "post_dynamic_followup_1", "time": "Sunday 5pm"}]
 
 
 def test_heuristic_policy_recovers_from_strict_eval_feedback() -> None:

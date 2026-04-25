@@ -229,7 +229,7 @@ def log_verbose_step(
                 },
                 "expected_action_from_full_state": format_action(expected_action),
                 "actual_action_from_policy_input": format_action(actual_action),
-                "action_match": format_action(expected_action) == format_action(actual_action),
+                "action_match": actions_match(actual_action, expected_action),
                 "broker_feedback_payload": policy_observation.model_dump(),
             },
             ensure_ascii=False,

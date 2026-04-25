@@ -170,7 +170,13 @@ class FlatmateEpisode:
         return list(self._scenario["buyer_profile"]["initial_disclosure_fields"])
 
     def _phase_tools(self) -> list[str]:
-        return SELLER_TOOLS if self._state.phase == "seller" else BUYER_TOOLS
+        tools = SELLER_TOOLS if self._state.phase == "seller" else BUYER_TOOLS
+        tools = list(tools)
+        if self._state.phase == "seller" and self._state.seller_profile_stored:
+            tools.remove("store_seller_details")
+        if self._state.phase == "buyer" and self._state.buyer_profile_stored:
+            tools.remove("store_user_details")
+        return tools
 
     def _required_fields(self) -> list[str]:
         if self._state.phase == "seller":
@@ -516,7 +522,17 @@ class FlatmateEpisode:
         )
 
     def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if tool_name not in self._phase_tools():
+        phase_tools = self._phase_tools()
+        if tool_name not in phase_tools:
+            if self._state.phase == "buyer" and tool_name == "store_user_details" and self._state.buyer_profile_stored:
+                return {"tool": tool_name, "success": True, "message": "Buyer profile already stored."}
+            if self._state.phase == "seller" and tool_name == "store_seller_details" and self._state.seller_profile_stored:
+                return {
+                    "tool": tool_name,
+                    "success": True,
+                    "message": "Seller profile already stored.",
+                    "post_id": self._dynamic_post_id,
+                }
             self._record_violation(f"tool_not_available:{tool_name}")
             return {"tool": tool_name, "success": False, "message": f"Tool {tool_name} is not available in phase {self._state.phase}."}
 
@@ -543,6 +559,7 @@ class FlatmateEpisode:
         del arguments
         self._searched = True
         results = []
+        rejected_for_slots = []
         buyer = self._scenario["buyer_profile"]
         for post_id in self._scenario["task_post_ids"]:
             post = self._posts[post_id]
@@ -552,7 +569,20 @@ class FlatmateEpisode:
                 continue
             if buyer["dietary"] == "non-veg" and post["diet"] == "veg only":
                 continue
+            if self._scenario["task_id"] == "task_visit_single_seller_followup":
+                buyer_slots = set(buyer["visit_availability"])
+                if not any(slot in buyer_slots for slot in post["calendar_slots"]):
+                    rejected_for_slots.append(post_id)
+                    continue
             results.append(post_id)
+        if self._scenario["task_id"] == "task_visit_single_seller_followup" and not results:
+            return {
+                "tool": "search_posts",
+                "success": True,
+                "message": "Found 0 current posts compatible with the buyer's visit availability.",
+                "post_ids": [],
+                "rejected_for_slot_mismatch": rejected_for_slots,
+            }
         return {"tool": "search_posts", "success": True, "message": f"Found {len(results)} matching posts.", "post_ids": results}
 
     def _tool_close_buyer_conversation(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -590,6 +620,8 @@ class FlatmateEpisode:
 
     def _tool_match_location_preference(self, arguments: dict[str, Any]) -> dict[str, Any]:
         post_ids = list(arguments.get("post_ids", []))
+        if not post_ids and self._state.phase == "seller" and self._dynamic_post_id:
+            post_ids = [self._dynamic_post_id]
         buyer_areas = set(self._scenario["buyer_profile"]["areas"])
         matches = {}
         for post_id in post_ids:
@@ -692,6 +724,8 @@ class FlatmateEpisode:
 
     def _tool_check_table_slot_matches(self, arguments: dict[str, Any]) -> dict[str, Any]:
         post_ids = list(arguments.get("post_ids", []))
+        if not post_ids and self._state.phase == "seller" and self._dynamic_post_id:
+            post_ids = [self._dynamic_post_id]
         buyer_slots = set(self._scenario["buyer_profile"]["visit_availability"])
         matches = {}
         for post_id in post_ids:
@@ -704,9 +738,34 @@ class FlatmateEpisode:
             self._slots_checked[post_id] = list(post["calendar_slots"])
         return {"tool": "check_table_slot_matches", "success": True, "message": "Buyer-seller slot overlap checked.", "slot_matches": matches}
 
+    def _infer_followup_post_and_time(self, arguments: dict[str, Any]) -> tuple[str, str]:
+        post_id = str(arguments.get("post_id") or arguments.get("post") or self._dynamic_post_id or "post_dynamic_followup_1")
+        time_text = str(arguments.get("time_text") or arguments.get("time") or arguments.get("slot") or "")
+        if time_text:
+            return post_id, time_text
+
+        candidate_slots: list[str] = []
+        slot_matches = arguments.get("slot_matches")
+        if isinstance(slot_matches, dict):
+            for key, value in slot_matches.items():
+                if not arguments.get("post_id"):
+                    post_id = str(key)
+                if isinstance(value, list):
+                    candidate_slots.extend(str(item) for item in value)
+        calendar_slots = arguments.get("calendar_slots")
+        if isinstance(calendar_slots, list):
+            candidate_slots.extend(str(item) for item in calendar_slots)
+        candidate_slots.extend(self._slots_checked.get(post_id, []))
+
+        for preferred in ["Sunday 5pm", "Saturday 4pm"]:
+            if preferred in candidate_slots:
+                return post_id, preferred
+        if candidate_slots:
+            return post_id, candidate_slots[0]
+        return post_id, time_text
+
     def _tool_confirm_seller_match(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        post_id = arguments.get("post_id", "")
-        time_text = arguments.get("time_text", "")
+        post_id, time_text = self._infer_followup_post_and_time(arguments)
         post = self._resolve_post(post_id)
         if not post or time_text not in post["calendar_slots"]:
             return {"tool": "confirm_seller_match", "success": False, "message": "Selected seller slot is invalid."}
@@ -716,16 +775,14 @@ class FlatmateEpisode:
         return {"tool": "confirm_seller_match", "success": True, "message": f"Seller confirmed {time_text}.", "post_id": post_id, "time_text": time_text}
 
     def _tool_offer_matched_listing_to_buyer(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        post_id = arguments.get("post_id", "")
-        time_text = arguments.get("time_text", "")
+        post_id, time_text = self._infer_followup_post_and_time(arguments)
         if self._seller_confirmations.get(post_id) != time_text:
             return {"tool": "offer_matched_listing_to_buyer", "success": False, "message": "Seller has not confirmed this slot yet."}
         self._buyer_offer_confirmations[post_id] = time_text
         return {"tool": "offer_matched_listing_to_buyer", "success": True, "message": f"Buyer confirmed {time_text} for {post_id}.", "post_id": post_id, "time_text": time_text}
 
     def _tool_schedule_table_visit(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        post_id = arguments.get("post_id", "")
-        time_text = arguments.get("time_text", "")
+        post_id, time_text = self._infer_followup_post_and_time(arguments)
         if self._seller_confirmations.get(post_id) != time_text:
             return {"tool": "schedule_table_visit", "success": False, "message": "Seller confirmation missing for this slot."}
         if self._buyer_offer_confirmations.get(post_id) != time_text:
@@ -764,8 +821,21 @@ class FlatmateEpisode:
         if tool_name == "store_seller_details" and "Missing seller fields:" in tool_message:
             missing = tool_message.split("Missing seller fields:", 1)[1].strip()
             return f"Ask the seller for these missing fields before storing details: {missing}."
+        if tool_name == "search_posts" and last_tool_result.get("success") and not last_tool_result.get("post_ids"):
+            return "No current listing fits the buyer's stored visit availability. Close the buyer conversation before waiting for a seller follow-up."
         if tool_name == "search_posts" and last_tool_result.get("success"):
             return "Search results are ready. Evaluate matching listings next."
+        if tool_name == "store_seller_details" and last_tool_result.get("success"):
+            post_id = str(last_tool_result.get("post_id", "the new post"))
+            return f"Seller profile is stored as {post_id}. Match this post against the stored buyer profile next."
+        if tool_name == "match_location_preference" and last_tool_result.get("success") and self._state.phase == "seller":
+            return "Location preference has been checked for the new seller post. Check buyer-seller slot overlap next."
+        if tool_name == "check_table_slot_matches" and last_tool_result.get("success"):
+            return "Buyer-seller slot overlap is available. Confirm one matching slot with the seller next."
+        if tool_name == "confirm_seller_match" and last_tool_result.get("success"):
+            return "Seller has confirmed the slot. Offer the matched listing and slot back to the buyer next."
+        if tool_name == "offer_matched_listing_to_buyer" and last_tool_result.get("success"):
+            return "Buyer has confirmed the matched slot. Schedule the table visit next."
         if tool_name == "check_calendar_slots" and last_tool_result.get("success"):
             return "Calendar slots are available. Ask the buyer to confirm one matching time before contacting the poster."
         if tool_name == "contact_poster" and last_tool_result.get("success"):
