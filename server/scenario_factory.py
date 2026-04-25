@@ -17,6 +17,9 @@ def build_post(
     constraints: list[str],
     calendar_slots: list[str],
     description: str,
+    pre_booked_slots: list[str] | None = None,
+    amenities: dict[str, bool] | None = None,
+    negotiable: bool = False,
 ) -> dict[str, Any]:
     return {
         "id": post_id,
@@ -27,7 +30,10 @@ def build_post(
         "commute_to_goregaon_mins": commute_to_goregaon_mins,
         "constraints": list(constraints),
         "calendar_slots": list(calendar_slots),
+        "pre_booked_slots": list(pre_booked_slots or []),
         "description": description,
+        "amenities": dict(amenities or {}),
+        "negotiable": negotiable,
     }
 
 
@@ -40,6 +46,7 @@ def build_buyer_profile(
     visit_availability: list[str],
     initial_disclosure_fields: list[str],
     hidden_additional_availability: list[str] | None = None,
+    hidden_budget_ceiling: int | None = None,
 ) -> dict[str, Any]:
     return {
         "budget_max": budget_max,
@@ -49,6 +56,7 @@ def build_buyer_profile(
         "visit_availability": list(visit_availability),
         "initial_disclosure_fields": list(initial_disclosure_fields),
         "hidden_additional_availability": list(hidden_additional_availability or []),
+        "hidden_budget_ceiling": hidden_budget_ceiling,
     }
 
 

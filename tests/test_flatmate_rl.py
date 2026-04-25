@@ -292,7 +292,7 @@ def test_seller_followup_search_returns_no_visit_compatible_current_posts() -> N
 
     assert obs.last_tool_result["post_ids"] == []
     assert obs.last_tool_result["rejected_for_slot_mismatch"] == ["post_131", "post_132"]
-    assert "No current listing fits" in obs.feedback_summary
+    assert "search_posts returned 0 results" in obs.feedback_summary
 
 
 def test_seller_followup_accepts_paraphrased_assistant_message() -> None:
@@ -334,13 +334,13 @@ def test_seller_followup_match_tools_infer_dynamic_post_when_args_are_loose() ->
     _tool(env, "store_user_details")
     _tool(env, "search_posts")
     _tool(env, "close_buyer_conversation")
-    _msg(env, "Please share the household dietary setup and who the flat is for.")
+    _msg(env, "Please share the household dietary setup, who the flat is for, and available time slots.")
     _tool(env, "store_seller_details", dietary="non-vegetarian", occupation_requirement="working professionals")
 
     match_obs = _tool(env, "match_location_preference", area="Jogeshwari", rent=19500)
     assert match_obs.last_tool_result["matches"] == {"post_dynamic_followup_1": {"match": True}}
 
-    slot_obs = _tool(env, "check_table_slot_matches", calendar_slots=["Saturday 4pm", "Sunday 5pm"])
+    slot_obs = _tool(env, "check_table_slot_matches", post_ids=["post_dynamic_followup_1"])
     assert slot_obs.last_tool_result["slot_matches"] == {
         "post_dynamic_followup_1": ["Saturday 4pm", "Sunday 5pm"]
     }
@@ -348,15 +348,16 @@ def test_seller_followup_match_tools_infer_dynamic_post_when_args_are_loose() ->
     confirm_obs = _tool(
         env,
         "confirm_seller_match",
-        slot_matches={"post_dynamic_followup_1": ["Saturday 4pm", "Sunday 5pm"]},
+        post_id="post_dynamic_followup_1",
+        time_text="Sunday 5pm",
     )
     assert confirm_obs.last_tool_result["success"] is True
     assert confirm_obs.last_tool_result["time_text"] == "Sunday 5pm"
 
-    offer_obs = _tool(env, "offer_matched_listing_to_buyer", calendar_slots=["Saturday 4pm", "Sunday 5pm"])
+    offer_obs = _tool(env, "offer_matched_listing_to_buyer", post_id="post_dynamic_followup_1", time_text="Sunday 5pm")
     assert offer_obs.last_tool_result["success"] is True
 
-    final_obs = _tool(env, "schedule_table_visit", calendar_slots=["Saturday 4pm", "Sunday 5pm"])
+    final_obs = _tool(env, "schedule_table_visit", post_id="post_dynamic_followup_1", time_text="Sunday 5pm")
     assert final_obs.done is True
     assert final_obs.booked_visits == [{"post_id": "post_dynamic_followup_1", "time": "Sunday 5pm"}]
 
@@ -438,7 +439,7 @@ def test_seller_followup_scenario_schedules_dynamic_visit() -> None:
     assert transition.phase == "seller"
     assert "I will follow up if a suitable listing comes in" in transition.buyer_conversation_history[-1]["content"]
     assert "listing a new flatmate-share opening" in transition.seller_conversation_history[-1]["content"]
-    _msg(env, "Please share the household dietary setup and who the flat is for.")
+    _msg(env, "Please share the household dietary setup, who the flat is for, and available time slots.")
     _tool(env, "store_seller_details")
     _tool(env, "match_location_preference", post_ids=["post_dynamic_followup_1"])
     _tool(env, "check_table_slot_matches", post_ids=["post_dynamic_followup_1"])
@@ -448,3 +449,51 @@ def test_seller_followup_scenario_schedules_dynamic_visit() -> None:
 
     assert final_obs.done is True
     assert final_obs.booked_visits == [{"post_id": "post_dynamic_followup_1", "time": "Sunday 5pm"}]
+
+
+def test_conflict_check_calendar_slots_exposes_pre_booked_and_available() -> None:
+    env = FlatmateRlEnvironment()
+    env.reset(scenario_id="task_visit_conflict_check")
+
+    _msg(env, "Please share your dietary preference and visit availability.")
+    _tool(env, "store_user_details")
+    _tool(env, "search_posts")
+    _tool(env, "match_location_preference", post_ids=["post_142"])
+    _tool(env, "get_commute_time", post_ids=["post_142"])
+    obs = _tool(env, "check_calendar_slots", post_ids=["post_142"])
+
+    assert obs.last_tool_result["success"] is True
+    assert obs.last_tool_result["calendar_slots"]["post_142"] == ["Sunday 5pm"]
+    assert obs.last_tool_result["pre_booked_slots"]["post_142"] == ["Saturday 11am", "Saturday 4pm"]
+    assert "already booked" in obs.last_tool_result["message"]
+
+
+def test_conflict_check_cannot_book_pre_booked_slot() -> None:
+    env = FlatmateRlEnvironment()
+    env.reset(scenario_id="task_visit_conflict_check")
+
+    _msg(env, "Please share your dietary preference and visit availability.")
+    _tool(env, "store_user_details")
+    _tool(env, "search_posts")
+    _tool(env, "match_location_preference", post_ids=["post_142"])
+    _tool(env, "get_commute_time", post_ids=["post_142"])
+    _tool(env, "check_calendar_slots", post_ids=["post_142"])
+
+    obs = _tool(env, "contact_poster", post_id="post_142", time_text="Saturday 11am")
+    assert obs.last_tool_result["success"] is False
+    assert obs.done is False
+
+
+def test_conflict_check_heuristic_books_only_available_slot() -> None:
+    env = FlatmateRlEnvironment()
+    obs = env.reset(scenario_id="task_visit_conflict_check")
+
+    for _ in range(14):
+        payload = expected_policy_action("task_visit_conflict_check", obs.model_dump())
+        assert payload is not None
+        obs = env.step(FlatmateRlAction.model_validate(payload))
+        if obs.done:
+            break
+
+    assert obs.done is True
+    assert obs.booked_visits == [{"post_id": "post_142", "time": "Sunday 5pm"}]

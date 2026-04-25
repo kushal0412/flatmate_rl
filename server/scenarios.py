@@ -166,6 +166,117 @@ POSTS = {
         calendar_slots=["Wednesday 7pm", "Thursday 7pm"],
         description="Compact Jogeshwari room with practical flatmates and midweek-only visit options.",
     ),
+    "post_142": build_post(
+        post_id="post_142",
+        area="Andheri W",
+        rent=18500,
+        diet="non-veg ok",
+        listing_type="2BHK share",
+        commute_to_goregaon_mins=17,
+        constraints=["employed_only"],
+        calendar_slots=["Saturday 11am", "Saturday 4pm", "Sunday 5pm"],
+        pre_booked_slots=["Saturday 11am", "Saturday 4pm"],
+        description="Spacious 2BHK in Andheri West with professional flatmates. Saturday slots are already taken by other prospective buyers.",
+    ),
+    # --- Scenario 1: Hidden-Budget Negotiation ---
+    "post_155": build_post(
+        post_id="post_155",
+        area="Andheri W",
+        rent=24000,
+        diet="non-veg ok",
+        listing_type="2BHK share",
+        commute_to_goregaon_mins=16,
+        constraints=["employed_only"],
+        calendar_slots=["Saturday 11am", "Sunday 2pm"],
+        description="Modern 2BHK in Andheri West near metro station. Flatmates open to rent negotiation for the right working professional.",
+        negotiable=True,
+    ),
+    # --- Scenario 2: Slot Cancellation Waitlist ---
+    "post_162": build_post(
+        post_id="post_162",
+        area="Jogeshwari",
+        rent=18500,
+        diet="non-veg ok",
+        listing_type="2BHK share",
+        commute_to_goregaon_mins=13,
+        constraints=["employed_only"],
+        calendar_slots=["Saturday 10am", "Sunday 3pm"],
+        pre_booked_slots=["Saturday 10am", "Sunday 3pm"],
+        description="Well-located Jogeshwari 2BHK share. High demand — slots fill up quickly. Worth joining the waitlist.",
+    ),
+    # --- Scenario 3: Multi-Visit Preference Evolution ---
+    "post_067": build_post(
+        post_id="post_067",
+        area="Andheri W",
+        rent=19500,
+        diet="non-veg ok",
+        listing_type="2BHK share",
+        commute_to_goregaon_mins=17,
+        constraints=["employed_only"],
+        calendar_slots=["Saturday 3pm", "Sunday 11am"],
+        description="Quiet 2BHK in Andheri West, close to a gym and metro. Ideal for working professionals seeking a peaceful environment.",
+        amenities={"quiet": True, "gym_nearby": True},
+    ),
+    "post_n01": build_post(
+        post_id="post_n01",
+        area="Andheri W",
+        rent=18500,
+        diet="non-veg ok",
+        listing_type="2BHK share",
+        commute_to_goregaon_mins=20,
+        constraints=["employed_only"],
+        calendar_slots=["Saturday 2pm"],
+        description="2BHK near Western Express Highway. Good connectivity but the area is noisy during peak hours.",
+        amenities={"quiet": False, "gym_nearby": False},
+    ),
+    "post_n02": build_post(
+        post_id="post_n02",
+        area="Jogeshwari",
+        rent=17500,
+        diet="non-veg ok",
+        listing_type="room",
+        commute_to_goregaon_mins=15,
+        constraints=["employed_only"],
+        calendar_slots=["Sunday 1pm"],
+        description="Budget room in Jogeshwari near a lively market. Affordable but area has significant street noise.",
+        amenities={"quiet": False, "gym_nearby": False},
+    ),
+    "post_q01": build_post(
+        post_id="post_q01",
+        area="Andheri W",
+        rent=19200,
+        diet="non-veg ok",
+        listing_type="2BHK share",
+        commute_to_goregaon_mins=22,
+        constraints=["employed_only", "no_loud_music_after_11pm"],
+        calendar_slots=["Sunday 4pm"],
+        description="Quiet residential 2BHK in Andheri West. Away from busy roads, great for those valuing peaceful evenings. No gym in the immediate area.",
+        amenities={"quiet": True, "gym_nearby": False},
+    ),
+    "post_g01": build_post(
+        post_id="post_g01",
+        area="Andheri W",
+        rent=18800,
+        diet="non-veg ok",
+        listing_type="2BHK share",
+        commute_to_goregaon_mins=19,
+        constraints=["employed_only"],
+        calendar_slots=["Monday 7pm"],
+        description="2BHK near a busy gym complex. Great gym access but the area around the complex is noisy.",
+        amenities={"quiet": False, "gym_nearby": True},
+    ),
+    "post_i01": build_post(
+        post_id="post_i01",
+        area="Malad",
+        rent=16000,
+        diet="non-veg ok",
+        listing_type="room",
+        commute_to_goregaon_mins=30,
+        constraints=["employed_only"],
+        calendar_slots=["Saturday 5pm"],
+        description="Budget room in Malad. Longer commute to Goregaon East but very affordable.",
+        amenities={"quiet": False, "gym_nearby": False},
+    ),
 }
 
 
@@ -209,7 +320,7 @@ SCENARIOS = {
                 "is_price_range_fixed": False,
             },
         },
-        initial_user_message="Hi, I'm looking for a flatmate-share near Goregaon East. My budget is up to Rs. 20,000 and I’m mainly considering Andheri West or Jogeshwari because I work as a software engineer at a startup.",
+        initial_user_message="Hi, I'm looking for a flatmate-share near Goregaon East. My budget is up to Rs. 20,000 and I'm mainly considering Andheri West or Jogeshwari because I work as a software engineer at a startup.",
     ),
     "task_visit_single_hidden_flex": build_visit_scenario(
         task_id="task_visit_single_hidden_flex",
@@ -251,7 +362,7 @@ SCENARIOS = {
                 "is_price_range_fixed": False,
             },
         },
-        initial_user_message="Hi, I’m looking for a flatmate-share around Andheri West or Jogeshwari. My budget is Rs. 20,000, I work in Goregaon East as a software engineer, and Tuesday after 6pm is the slot I can do right now.",
+        initial_user_message="Hi, I'm looking for a flatmate-share around Andheri West or Jogeshwari. My budget is Rs. 20,000, I work in Goregaon East as a software engineer, and Tuesday after 6pm is the slot I can do right now.",
     ),
     "task_visit_multi": build_visit_scenario(
         task_id="task_visit_multi",
@@ -294,7 +405,7 @@ SCENARIOS = {
                 "is_price_range_fixed": False,
             },
         },
-        initial_user_message="Hi, I want to line up visits for at least two good flatmate-share options before deciding. My budget is Rs. 20,000, I’m focused on Andheri West or Jogeshwari, and I work in Goregaon East as a software engineer.",
+        initial_user_message="Hi, I want to line up visits for at least two good flatmate-share options before deciding. My budget is Rs. 20,000, I'm focused on Andheri West or Jogeshwari, and I work in Goregaon East as a software engineer.",
     ),
     "task_visit_single_seller_followup": build_visit_scenario(
         task_id="task_visit_single_seller_followup",
@@ -360,7 +471,284 @@ SCENARIOS = {
                 "description": "2BHK share with one working professional, good commute to Goregaon East",
             },
         },
-        initial_user_message="Hi, I’m looking for a flatmate-share in Andheri West or Jogeshwari. My budget is Rs. 20,000, I work in Goregaon East as a software engineer, and Saturday 4pm or Sunday 5pm are the only times I can visit.",
-        seller_initial_message="Hi, I want help listing a new flatmate-share opening in Jogeshwari. The rent is around Rs. 19,500 for a 2BHK share, and visit slots are Saturday 4pm or Sunday 5pm.",
+        initial_user_message="Hi, I'm looking for a flatmate-share in Andheri West or Jogeshwari. My budget is Rs. 20,000, I work in Goregaon East as a software engineer, and Saturday 4pm or Sunday 5pm are the only times I can visit.",
+        seller_initial_message="Hi, I want help listing a new flatmate-share opening in Jogeshwari. The rent is around Rs. 19,500 for a 2BHK share. I can tell you more about the listing and available visit times.",
+    ),
+    "task_negotiation_hidden_budget": build_visit_scenario(
+        task_id="task_negotiation_hidden_budget",
+        label="Hidden Budget Negotiation",
+        difficulty="hard",
+        description=(
+            "The buyer has already seen post_155 and likes it, but the listed rent of Rs. 24,000 is above their "
+            "stated budget of Rs. 20,000. The buyer has a hidden ceiling of Rs. 22,000; the seller has a hidden "
+            "floor of Rs. 21,000. The agent must probe both sides incrementally, find the overlapping range, "
+            "and close the deal via confirm_negotiated_deal."
+        ),
+        task_post_ids=["post_155", "post_023", "post_031"],
+        buyer_profile=build_buyer_profile(
+            budget_max=20000,
+            hidden_budget_ceiling=22000,
+            dietary="non-veg",
+            areas=["Andheri W", "Jogeshwari"],
+            occupation="software engineer at a startup",
+            visit_availability=["Saturday 11am", "Sunday 2pm"],
+            initial_disclosure_fields=["budget", "areas", "occupation"],
+        ),
+        ground_truth=build_ground_truth(
+            optimal_posts=["post_155"],
+            acceptable_posts=[],
+            dealbreaker_posts=[],
+            required_bookings=1,
+            required_tool_calls=[
+                "store_user_details",
+                "search_posts",
+                "match_location_preference",
+                "get_commute_time",
+                "check_calendar_slots",
+                "shortlist",
+                "propose_price_to_buyer",
+                "propose_price_to_seller",
+                "confirm_negotiated_deal",
+            ],
+            required_info=["budget", "diet", "areas", "occupation", "visit_availability"],
+            success_condition=(
+                "Buyer ceiling (Rs. 22,000) and seller floor (Rs. 21,000) overlap. Agent must probe buyer and "
+                "seller with price proposals to discover the overlap, then call confirm_negotiated_deal with "
+                "an agreed rent that both sides have accepted."
+            ),
+            min_viable_turns=8,
+        ),
+        scenario_creation_config={
+            "defer_buyer_creation_until_match": False,
+            "negotiation_config": {
+                "listed_rent": 24000,
+                "buyer_ceiling": 22000,
+                "seller_floor": 21000,
+                "negotiable_post_id": "post_155",
+                "max_rounds": 4,
+            },
+            "expected_answers": {
+                "user_type": "buyer",
+                "user_sub_type": "flat",
+                "budget_max": 20000,
+                "dietary": "non-veg",
+                "areas": ["Andheri W", "Jogeshwari"],
+                "occupation": "software engineer at a startup",
+                "visit_availability": ["Saturday 11am", "Sunday 2pm"],
+                "location_pref_type": "specific_area",
+                "price_range_negotiable": True,
+                "is_price_range_fixed": False,
+            },
+        },
+        initial_user_message=(
+            "Hi, I'm looking for a flatmate-share in Andheri West or Jogeshwari. My usual budget is Rs. 20,000, "
+            "but I've seen post_155 in Andheri West and I really like it. It's listed at Rs. 24,000 but I heard "
+            "they might negotiate. I work as a software engineer at a startup in Goregaon East."
+        ),
+    ),
+    "task_slot_cancellation_waitlist": build_visit_scenario(
+        task_id="task_slot_cancellation_waitlist",
+        label="Slot Cancellation Waitlist",
+        difficulty="hard",
+        description=(
+            "The buyer likes post_162 in Jogeshwari but all calendar slots are pre-booked. The agent must "
+            "acknowledge the situation, add the buyer to the waitlist, and then respond proactively when a "
+            "prior booking is cancelled and Saturday 10am becomes available. The agent must notify the buyer "
+            "and complete the booking through the normal confirmation flow."
+        ),
+        task_post_ids=["post_162", "post_061", "post_082"],
+        buyer_profile=build_buyer_profile(
+            budget_max=20000,
+            dietary="non-veg",
+            areas=["Andheri W", "Jogeshwari"],
+            occupation="software engineer at a startup",
+            visit_availability=["Saturday 10am", "Sunday 3pm"],
+            initial_disclosure_fields=["budget", "areas", "occupation"],
+        ),
+        ground_truth=build_ground_truth(
+            optimal_posts=["post_162"],
+            acceptable_posts=[],
+            dealbreaker_posts=[],
+            required_bookings=1,
+            required_tool_calls=[
+                "store_user_details",
+                "search_posts",
+                "match_location_preference",
+                "get_commute_time",
+                "check_calendar_slots",
+                "add_to_waitlist",
+                "notify_buyer_slot_freed",
+                "contact_poster",
+                "book_viewing",
+            ],
+            required_info=["budget", "diet", "areas", "occupation", "visit_availability"],
+            success_condition=(
+                "All slots for post_162 are initially pre-booked. The agent must call add_to_waitlist, then "
+                "respond to the cancellation event by calling notify_buyer_slot_freed for Saturday 10am, "
+                "obtain poster confirmation via contact_poster, and complete the booking via book_viewing."
+            ),
+            min_viable_turns=8,
+        ),
+        scenario_creation_config={
+            "defer_buyer_creation_until_match": False,
+            "cancellation_event": {
+                "freed_slot": "Saturday 10am",
+                "post_id": "post_162",
+            },
+            "expected_answers": {
+                "user_type": "buyer",
+                "user_sub_type": "flat",
+                "budget_max": 20000,
+                "dietary": "non-veg",
+                "areas": ["Andheri W", "Jogeshwari"],
+                "occupation": "software engineer at a startup",
+                "visit_availability": ["Saturday 10am", "Sunday 3pm"],
+                "location_pref_type": "specific_area",
+                "price_range_negotiable": False,
+                "is_price_range_fixed": False,
+            },
+        },
+        initial_user_message=(
+            "Hi, I'm looking for a flatmate-share in Andheri West or Jogeshwari. "
+            "My budget is up to Rs. 20,000 and I work as a software engineer at a startup in Goregaon East."
+        ),
+    ),
+    "task_multi_visit_preference_evolution": build_visit_scenario(
+        task_id="task_multi_visit_preference_evolution",
+        label="Multi-Visit Preference Evolution",
+        difficulty="hard",
+        description=(
+            "The buyer schedules three flat visits in a single day. After visit 1 (post_023) they discover the "
+            "area is too noisy. After visit 2 (post_052) they discover there is no gym nearby. New listings "
+            "arrive after each visit — some relevant, some not. The agent must debrief after each visit, update "
+            "the buyer profile with discovered preferences, filter new arrivals, and re-search. The deal closes "
+            "on visit 3 (post_067), which is quiet and has a nearby gym."
+        ),
+        task_post_ids=[
+            "post_023", "post_052", "post_073", "post_082",
+            "post_n01", "post_n02", "post_q01",
+            "post_g01", "post_i01", "post_067",
+        ],
+        buyer_profile=build_buyer_profile(
+            budget_max=20000,
+            dietary="non-veg",
+            areas=["Andheri W", "Jogeshwari"],
+            occupation="software engineer at a startup",
+            visit_availability=["Saturday 11am", "Saturday 1pm", "Saturday 3pm", "Sunday 4pm"],
+            initial_disclosure_fields=["budget", "areas", "occupation"],
+        ),
+        ground_truth=build_ground_truth(
+            optimal_posts=["post_067"],
+            acceptable_posts=["post_023", "post_052"],
+            dealbreaker_posts=["post_n01", "post_n02", "post_g01", "post_i01"],
+            required_bookings=3,
+            required_tool_calls=[
+                "store_user_details",
+                "search_posts",
+                "match_location_preference",
+                "get_commute_time",
+                "check_calendar_slots",
+                "contact_poster",
+                "book_viewing",
+                "debrief_visit",
+                "filter_new_arrivals",
+            ],
+            required_info=["budget", "diet", "areas", "occupation", "visit_availability"],
+            success_condition=(
+                "Agent must book all three visits. After each of the first two visits, the agent calls "
+                "debrief_visit to extract the rejection reason, updates stored preferences via store_user_details, "
+                "calls filter_new_arrivals on the newly arrived listings, and re-searches with updated criteria. "
+                "The deal closes when book_viewing succeeds for post_067 on visit 3."
+            ),
+            min_viable_turns=12,
+            schedule_feasible_posts=["post_023", "post_052", "post_067"],
+            max_schedule_feasible_visits=3,
+        ),
+        scenario_creation_config={
+            "defer_buyer_creation_until_match": False,
+            "initial_post_ids": ["post_023", "post_052", "post_073", "post_082"],
+            "post_arrival_events": [
+                {"after_visit": 1, "new_post_ids": ["post_n01", "post_n02", "post_q01"]},
+                {"after_visit": 2, "new_post_ids": ["post_g01", "post_i01", "post_067"]},
+            ],
+            "expected_answers": {
+                "user_type": "buyer",
+                "user_sub_type": "flat",
+                "budget_max": 20000,
+                "dietary": "non-veg",
+                "areas": ["Andheri W", "Jogeshwari"],
+                "occupation": "software engineer at a startup",
+                "visit_availability": ["Saturday 11am", "Saturday 1pm", "Saturday 3pm", "Sunday 4pm"],
+                "location_pref_type": "specific_area",
+                "price_range_negotiable": False,
+                "is_price_range_fixed": False,
+            },
+        },
+        initial_user_message=(
+            "Hi, I want to visit a few flatmate-share options in Andheri West or Jogeshwari today. "
+            "My budget is Rs. 20,000 and I work as a software engineer at a startup in Goregaon East. "
+            "I'm happy to do multiple visits — I'll know what I want after seeing a few places."
+        ),
+    ),
+    "task_visit_conflict_check": build_visit_scenario(
+        task_id="task_visit_conflict_check",
+        label="Single Visit With Pre-Booked Slot Conflict",
+        difficulty="hard",
+        description=(
+            "A buyer looks for a flatmate-share in Andheri West. The best matching flat has three listed visit slots "
+            "but two of them (Saturday 11am and Saturday 4pm) are already reserved by other prospective buyers. "
+            "The broker must call check_calendar_slots, read the pre_booked field, and propose only the remaining "
+            "open slot (Sunday 5pm) to the buyer before booking."
+        ),
+        task_post_ids=["post_142", "post_007", "post_044"],
+        buyer_profile=build_buyer_profile(
+            budget_max=20000,
+            dietary="non-veg",
+            areas=["Andheri W", "Jogeshwari"],
+            occupation="software engineer at a startup",
+            visit_availability=["Saturday 11am", "Saturday 4pm", "Sunday 5pm"],
+            initial_disclosure_fields=["budget", "areas", "occupation"],
+        ),
+        ground_truth=build_ground_truth(
+            optimal_posts=["post_142"],
+            acceptable_posts=[],
+            dealbreaker_posts=["post_007", "post_044"],
+            required_bookings=1,
+            required_tool_calls=[
+                "store_user_details",
+                "search_posts",
+                "match_location_preference",
+                "get_commute_time",
+                "check_calendar_slots",
+                "contact_poster",
+                "book_viewing",
+            ],
+            required_info=["budget", "diet", "areas", "occupation", "visit_availability"],
+            success_condition=(
+                "Broker must call check_calendar_slots and read the pre_booked_slots field to discover that "
+                "Saturday 11am and Saturday 4pm are already taken. The broker must propose only Sunday 5pm "
+                "to the buyer, obtain explicit confirmation from both buyer and poster, and book that slot."
+            ),
+            min_viable_turns=7,
+        ),
+        scenario_creation_config={
+            "defer_buyer_creation_until_match": True,
+            "expected_answers": {
+                "user_type": "buyer",
+                "user_sub_type": "flat",
+                "budget_max": 20000,
+                "dietary": "non-veg",
+                "areas": ["Andheri W", "Jogeshwari"],
+                "occupation": "software engineer at a startup",
+                "visit_availability": ["Saturday 11am", "Saturday 4pm", "Sunday 5pm"],
+                "location_pref_type": "specific_area",
+                "price_range_negotiable": False,
+                "is_price_range_fixed": False,
+            },
+        },
+        initial_user_message=(
+            "Hi, I'm looking for a flatmate-share in Andheri West or Jogeshwari. "
+            "My budget is Rs. 20,000 and I work in Goregaon East as a software engineer at a startup."
+        ),
     ),
 }

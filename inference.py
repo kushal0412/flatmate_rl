@@ -39,7 +39,8 @@ IMAGE_NAME = os.getenv("IMAGE_NAME") or "flatmate_rl:latest"
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+MODEL_NAME = os.getenv("MODEL_NAME") or "Qmeta-llama/Llama-3.1-8B-Instruct"
+#meta-llama/Llama-3.1-8B-Instruct
 MAX_STEPS_ENV = os.getenv("MAX_STEPS")
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "256"))
@@ -358,23 +359,16 @@ def log_step_report(
 
 
 def build_user_prompt(step: int, observation: Any) -> str:
+    last_tool_result = dict(observation.last_tool_result or {})
+    last_tool_result.pop("stored_profile", None)
     return textwrap.dedent(
         f"""
         Step: {step}
         Phase: {observation.phase}
         Status: {observation.status}
-        Current user request: {observation.current_user_request}
-        Last user message: {observation.last_user_message}
         Available tools: {observation.available_tools}
-        Prerequisites satisfied: {json.dumps(observation.prerequisites_satisfied, ensure_ascii=False)}
-        Recent tool calls: {json.dumps(observation.recent_tool_calls, ensure_ascii=False)}
-        Gathered fields: {observation.gathered_fields}
-        Remaining required fields: {observation.remaining_required_fields}
-        Selected posts: {observation.selected_posts}
+        Last tool result: {json.dumps(last_tool_result, ensure_ascii=False)}
         Booked visits: {observation.booked_visits}
-        Last tool result: {json.dumps(observation.last_tool_result, ensure_ascii=False)}
-        Message: {observation.message}
-        Feedback summary: {observation.feedback_summary}
 
         Buyer/Broker transcript:
         {json.dumps(observation.buyer_conversation_history[-8:], ensure_ascii=False)}
@@ -707,7 +701,9 @@ async def run_scenario(
         if expected_payload is not None:
             expected_action = FlatmateRlAction.model_validate(expected_payload)
         if client is None:
-            action = heuristic_action(task_id, policy_observation)
+            # Heuristic is the ground-truth policy: give it the full unredacted observation
+            # so tool_trace (and other state) is intact even when --strict-eval is active.
+            action = heuristic_action(task_id, observation)
             source = "heuristic"
             error = None
         else:

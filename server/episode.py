@@ -28,6 +28,16 @@ BUYER_TOOLS = [
     "shortlist",
     "contact_poster",
     "book_viewing",
+    # Scenario 1: hidden-budget negotiation
+    "propose_price_to_buyer",
+    "propose_price_to_seller",
+    "confirm_negotiated_deal",
+    # Scenario 2: slot cancellation waitlist
+    "add_to_waitlist",
+    "notify_buyer_slot_freed",
+    # Scenario 3: multi-visit preference evolution
+    "debrief_visit",
+    "filter_new_arrivals",
 ]
 SELLER_TOOLS = [
     "store_seller_details",
@@ -93,6 +103,20 @@ class FlatmateEpisode:
         self._last_action_signature = ""
         self._repeated_action_streak = 0
         self._last_observation: FlatmateRlObservation | None = None
+        # Scenario 1: hidden-budget negotiation state
+        self._negotiation_rounds_buyer: int = 0
+        self._negotiation_rounds_seller: int = 0
+        self._buyer_price_accepted: int | None = None
+        self._seller_price_accepted: int | None = None
+        self._negotiated_deal_closed: bool = False
+        # Scenario 2: slot cancellation waitlist state
+        self._waitlist_active: bool = False
+        self._waitlist_post_id: str = ""
+        self._waitlist_slot: str = ""
+        self._cancellation_fired: bool = False
+        # Scenario 3: multi-visit preference evolution state
+        self._post_arrivals_fired: set[int] = set()
+        self._available_post_ids: list[str] = []
 
     def reset(self, scenario_id: str | None = None) -> FlatmateRlObservation:
         selected = scenario_id or "task_visit_single"
@@ -118,6 +142,23 @@ class FlatmateEpisode:
         self._last_action_signature = ""
         self._repeated_action_streak = 0
         self._last_observation = None
+        # Reset scenario-specific state
+        self._negotiation_rounds_buyer = 0
+        self._negotiation_rounds_seller = 0
+        self._buyer_price_accepted = None
+        self._seller_price_accepted = None
+        self._negotiated_deal_closed = False
+        self._waitlist_active = False
+        self._waitlist_post_id = ""
+        self._waitlist_slot = ""
+        self._cancellation_fired = False
+        self._post_arrivals_fired = set()
+        # Set available post IDs (may be a subset for multi-visit scenario)
+        initial_ids = self._scenario.get("scenario_creation_config", {}).get("initial_post_ids")
+        if initial_ids is not None:
+            self._available_post_ids = list(initial_ids)
+        else:
+            self._available_post_ids = list(self._scenario["task_post_ids"])
 
         gathered_fields = self._initial_buyer_fields()
         initial_message = self._scenario["initial_user_message"]
@@ -444,8 +485,9 @@ class FlatmateEpisode:
     def _buyer_response(self, message: str) -> str:
         lowered = message.lower()
         profile = self._scenario["buyer_profile"]
+        task_id = self._scenario["task_id"]
 
-        if self._scenario["task_id"] == "task_visit_single_hidden_flex":
+        if task_id == "task_visit_single_hidden_flex":
             alternatives_offered = any(slot.lower() in lowered for slot in ["saturday", "sunday"])
             if alternatives_offered and "hidden_flex_revealed" not in self._state.gathered_fields:
                 self._state.gathered_fields.append("hidden_flex_revealed")
@@ -454,6 +496,32 @@ class FlatmateEpisode:
                     return "I can make Sunday 5pm work, so I confirm Sunday 5pm."
                 if "saturday 1pm" in lowered:
                     return "Saturday 1pm works for me too, so I confirm Saturday 1pm."
+
+        # Scenario 2: waitlist — fire cancellation notification on first message after add_to_waitlist
+        if task_id == "task_slot_cancellation_waitlist":
+            if self._waitlist_active and not self._cancellation_fired:
+                self._cancellation_fired = True
+                freed_slot = self._waitlist_slot
+                wl_post = self._waitlist_post_id
+                # Make freed slot bookable in subsequent calls
+                self._slots_checked[wl_post] = [freed_slot]
+                post = self._posts.get(wl_post)
+                if post and freed_slot in post.get("pre_booked_slots", []):
+                    post["pre_booked_slots"].remove(freed_slot)
+                return (
+                    f"Thanks for adding me to the waitlist! "
+                    f"Oh — I just got a notification that {freed_slot} for {wl_post} has opened up due to a cancellation. "
+                    f"Can you please book that slot for me?"
+                )
+
+        # Scenario 3: multi-visit — return scripted post-visit feedback when agent asks
+        if task_id == "task_multi_visit_preference_evolution":
+            booked_ids = [v["post_id"] for v in self._state.booked_visits]
+            if any(kw in lowered for kw in ["how was", "what did you think", "how did", "liked the flat", "after visiting"]):
+                if len(booked_ids) == 1 and booked_ids[0] == "post_023":
+                    return "The area was really noisy — definitely not what I'm looking for. I need somewhere quieter."
+                if len(booked_ids) == 2 and booked_ids[1] == "post_052":
+                    return "post_052 was nice and quiet, but there is no gym nearby, which is important to me."
 
         if "confirm" in lowered:
             for post_id, slots in self._slots_checked.items():
@@ -555,16 +623,20 @@ class FlatmateEpisode:
 
     def _slot_fits_buyer(self, slot: str) -> bool:
         visible_slots = list(self._scenario["buyer_profile"]["visit_availability"])
-        if self._scenario["task_id"] == "task_visit_single_hidden_flex" and "hidden_flex_revealed" in self._state.gathered_fields:
+        task_id = self._scenario["task_id"]
+        if task_id == "task_visit_single_hidden_flex" and "hidden_flex_revealed" in self._state.gathered_fields:
             visible_slots.extend(self._scenario["buyer_profile"]["hidden_additional_availability"])
-        if self._scenario["task_id"] == "task_visit_single":
+        if task_id == "task_visit_single":
             if slot in {"today 7pm", "tomorrow 7pm", "Saturday 11am", "Saturday 4pm"}:
                 return True
-        if self._scenario["task_id"] == "task_visit_multi":
+        if task_id == "task_visit_multi":
             if slot in {"tomorrow 7pm", "Saturday 4pm", "Saturday 11am", "Sunday 2pm", "Sunday 4pm", "Sunday 5pm"}:
                 return True
-        if self._scenario["task_id"] == "task_visit_single_seller_followup":
+        if task_id == "task_visit_single_seller_followup":
             return slot in {"Saturday 4pm", "Sunday 5pm"}
+        if task_id == "task_multi_visit_preference_evolution":
+            # Buyer is flexible — accepts any slot from the slots we've checked
+            return True
         return self._matches_any_slot(slot, visible_slots)
 
     def _handle_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> FlatmateRlObservation:
@@ -638,29 +710,57 @@ class FlatmateEpisode:
         del arguments
         self._searched = True
         results = []
+        negotiable_results = []
         rejected_for_slots = []
         buyer = self._scenario["buyer_profile"]
-        for post_id in self._scenario["task_post_ids"]:
-            post = self._posts[post_id]
+        gathered = set(self._state.gathered_fields)
+        task_id = self._scenario["task_id"]
+        is_negotiation = bool(self._scenario.get("scenario_creation_config", {}).get("negotiation_config"))
+
+        for post_id in self._available_post_ids:
+            post = self._posts.get(post_id)
+            if post is None:
+                continue
             if post["rent"] > buyer["budget_max"]:
+                if is_negotiation and post.get("negotiable"):
+                    negotiable_results.append(post_id)
                 continue
             if post["area"] not in buyer["areas"]:
                 continue
             if buyer["dietary"] == "non-veg" and post["diet"] == "veg only":
                 continue
-            if self._scenario["task_id"] == "task_visit_single_seller_followup":
+            # Multi-visit scenario: filter by discovered amenity preferences
+            if task_id == "task_multi_visit_preference_evolution":
+                amenities = post.get("amenities", {})
+                if "quiet_area" in gathered and not amenities.get("quiet"):
+                    continue
+                if "gym_nearby" in gathered and not amenities.get("gym_nearby"):
+                    continue
+            if task_id == "task_visit_single_seller_followup":
                 buyer_slots = set(buyer["visit_availability"])
                 if not any(slot in buyer_slots for slot in post["calendar_slots"]):
                     rejected_for_slots.append(post_id)
                     continue
             results.append(post_id)
-        if self._scenario["task_id"] == "task_visit_single_seller_followup" and not results:
+
+        if task_id == "task_visit_single_seller_followup" and not results:
             return {
                 "tool": "search_posts",
                 "success": True,
                 "message": "Found 0 current posts compatible with the buyer's visit availability.",
                 "post_ids": [],
                 "rejected_for_slot_mismatch": rejected_for_slots,
+            }
+        if negotiable_results:
+            return {
+                "tool": "search_posts",
+                "success": True,
+                "message": (
+                    f"Found {len(results)} posts within budget and "
+                    f"{len(negotiable_results)} above budget but open to negotiation."
+                ),
+                "post_ids": results,
+                "negotiable_post_ids": negotiable_results,
             }
         return {"tool": "search_posts", "success": True, "message": f"Found {len(results)} matching posts.", "post_ids": results}
 
@@ -690,7 +790,7 @@ class FlatmateEpisode:
         self._seller_history.append({"role": "user", "content": seller_message})
         self._last_user_message = seller_message
         self._state.phase = "seller"
-        self._state.gathered_fields = ["area", "rent", "listing_type", "calendar_slots"]
+        self._state.gathered_fields = ["area", "rent", "listing_type"]
         return {
             "tool": "close_buyer_conversation",
             "success": True,
@@ -727,15 +827,31 @@ class FlatmateEpisode:
 
     def _tool_check_calendar_slots(self, arguments: dict[str, Any]) -> dict[str, Any]:
         post_ids = list(arguments.get("post_ids", []))
-        results = {}
+        available_by_post: dict[str, list[str]] = {}
+        pre_booked_by_post: dict[str, list[str]] = {}
+        any_conflicts = False
         for post_id in post_ids:
             post = self._resolve_post(post_id)
             if not post:
-                results[post_id] = []
+                available_by_post[post_id] = []
                 continue
-            self._slots_checked[post_id] = list(post["calendar_slots"])
-            results[post_id] = list(post["calendar_slots"])
-        return {"tool": "check_calendar_slots", "success": True, "message": "Calendar slots fetched.", "calendar_slots": results}
+            all_slots = list(post["calendar_slots"])
+            pre_booked = list(post.get("pre_booked_slots", []))
+            available = [s for s in all_slots if s not in pre_booked]
+            self._slots_checked[post_id] = available
+            available_by_post[post_id] = available
+            if pre_booked:
+                pre_booked_by_post[post_id] = pre_booked
+                any_conflicts = True
+        result: dict[str, Any] = {
+            "tool": "check_calendar_slots",
+            "success": True,
+            "message": "Calendar slots fetched. Some slots are already booked by other buyers." if any_conflicts else "Calendar slots fetched.",
+            "calendar_slots": available_by_post,
+        }
+        if any_conflicts:
+            result["pre_booked_slots"] = pre_booked_by_post
+        return result
 
     def _tool_shortlist(self, arguments: dict[str, Any]) -> dict[str, Any]:
         post_ids = list(arguments.get("post_ids", []))
@@ -774,11 +890,217 @@ class FlatmateEpisode:
         if any(entry["time"] == time_text for entry in self._state.booked_visits):
             return {"tool": "book_viewing", "success": False, "message": "Visit time overlaps an existing booking."}
         self._state.booked_visits.append({"post_id": post_id, "time": time_text})
+        # Fire post-arrival events for multi-visit scenario
+        if self._scenario["task_id"] == "task_multi_visit_preference_evolution":
+            self._apply_post_arrival_event(len(self._state.booked_visits))
         if len(self._state.booked_visits) >= self._scenario["ground_truth"]["required_bookings"]:
             self._done = True
             self._state.done = True
             self._state.status = "completed"
         return {"tool": "book_viewing", "success": True, "message": f"Viewing booked for {post_id} at {time_text}.", "booked_visits": deepcopy(self._state.booked_visits)}
+
+    # ------------------------------------------------------------------ #
+    #  Scenario 1: Hidden-budget negotiation tools                        #
+    # ------------------------------------------------------------------ #
+
+    def _tool_propose_price_to_buyer(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        if self._scenario["task_id"] != "task_negotiation_hidden_budget":
+            return {"tool": "propose_price_to_buyer", "success": False, "message": "Not applicable in this scenario."}
+        post_id = str(arguments.get("post_id", ""))
+        proposed_rent = int(arguments.get("proposed_rent", 0))
+        config = self._scenario["scenario_creation_config"].get("negotiation_config", {})
+        buyer_ceiling = config.get("buyer_ceiling", 0)
+        self._negotiation_rounds_buyer += 1
+        if proposed_rent <= buyer_ceiling:
+            self._buyer_price_accepted = proposed_rent
+            return {
+                "tool": "propose_price_to_buyer",
+                "success": True,
+                "message": f"Buyer accepted Rs. {proposed_rent} for {post_id}.",
+                "accepted": True,
+                "proposed_rent": proposed_rent,
+            }
+        hint = " I could stretch a little, but not by much." if self._negotiation_rounds_buyer >= 2 else ""
+        return {
+            "tool": "propose_price_to_buyer",
+            "success": True,
+            "message": f"Buyer rejected Rs. {proposed_rent} — still too high.{hint}",
+            "accepted": False,
+            "proposed_rent": proposed_rent,
+        }
+
+    def _tool_propose_price_to_seller(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        if self._scenario["task_id"] != "task_negotiation_hidden_budget":
+            return {"tool": "propose_price_to_seller", "success": False, "message": "Not applicable in this scenario."}
+        post_id = str(arguments.get("post_id", ""))
+        proposed_rent = int(arguments.get("proposed_rent", 0))
+        config = self._scenario["scenario_creation_config"].get("negotiation_config", {})
+        seller_floor = config.get("seller_floor", 0)
+        self._negotiation_rounds_seller += 1
+        if proposed_rent >= seller_floor:
+            self._seller_price_accepted = proposed_rent
+            return {
+                "tool": "propose_price_to_seller",
+                "success": True,
+                "message": f"Seller accepted Rs. {proposed_rent} for {post_id}.",
+                "accepted": True,
+                "proposed_rent": proposed_rent,
+            }
+        hint = " Maybe a small discount is possible." if self._negotiation_rounds_seller >= 2 else ""
+        return {
+            "tool": "propose_price_to_seller",
+            "success": True,
+            "message": f"Seller rejected Rs. {proposed_rent} — can't go that low.{hint}",
+            "accepted": False,
+            "proposed_rent": proposed_rent,
+        }
+
+    def _tool_confirm_negotiated_deal(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        if self._scenario["task_id"] != "task_negotiation_hidden_budget":
+            return {"tool": "confirm_negotiated_deal", "success": False, "message": "Not applicable in this scenario."}
+        post_id = str(arguments.get("post_id", ""))
+        agreed_rent = int(arguments.get("agreed_rent", 0))
+        if self._buyer_price_accepted != agreed_rent:
+            return {
+                "tool": "confirm_negotiated_deal",
+                "success": False,
+                "message": f"Buyer has not yet accepted Rs. {agreed_rent}. Check buyer acceptance first.",
+            }
+        if self._seller_price_accepted != agreed_rent:
+            return {
+                "tool": "confirm_negotiated_deal",
+                "success": False,
+                "message": f"Seller has not yet accepted Rs. {agreed_rent}. Check seller acceptance first.",
+            }
+        self._negotiated_deal_closed = True
+        self._state.booked_visits.append({"post_id": post_id, "time": "negotiated_deal", "agreed_rent": agreed_rent})
+        self._done = True
+        self._state.done = True
+        self._state.status = "completed"
+        return {
+            "tool": "confirm_negotiated_deal",
+            "success": True,
+            "message": f"Deal confirmed for {post_id} at Rs. {agreed_rent}. Both buyer and seller have agreed.",
+            "agreed_rent": agreed_rent,
+        }
+
+    # ------------------------------------------------------------------ #
+    #  Scenario 2: Slot cancellation waitlist tools                       #
+    # ------------------------------------------------------------------ #
+
+    def _tool_add_to_waitlist(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        if self._scenario["task_id"] != "task_slot_cancellation_waitlist":
+            return {"tool": "add_to_waitlist", "success": False, "message": "Not applicable in this scenario."}
+        post_id = str(arguments.get("post_id", ""))
+        post = self._resolve_post(post_id)
+        if not post:
+            return {"tool": "add_to_waitlist", "success": False, "message": f"Unknown post {post_id}."}
+        config = self._scenario["scenario_creation_config"].get("cancellation_event", {})
+        self._waitlist_active = True
+        self._waitlist_post_id = post_id
+        self._waitlist_slot = config.get("freed_slot", "")
+        return {
+            "tool": "add_to_waitlist",
+            "success": True,
+            "message": f"Buyer added to waitlist for {post_id}. Will notify if a slot opens up.",
+            "post_id": post_id,
+        }
+
+    def _tool_notify_buyer_slot_freed(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        if self._scenario["task_id"] != "task_slot_cancellation_waitlist":
+            return {"tool": "notify_buyer_slot_freed", "success": False, "message": "Not applicable in this scenario."}
+        post_id = str(arguments.get("post_id", ""))
+        slot = str(arguments.get("slot", self._waitlist_slot))
+        if not self._cancellation_fired:
+            return {"tool": "notify_buyer_slot_freed", "success": False, "message": "No cancellation event has occurred yet for this post."}
+        if post_id != self._waitlist_post_id or slot != self._waitlist_slot:
+            return {"tool": "notify_buyer_slot_freed", "success": False, "message": f"Freed slot is {self._waitlist_slot} for {self._waitlist_post_id}, not {slot} for {post_id}."}
+        # Buyer is considered to have confirmed this slot
+        self._client_confirmations[post_id] = slot
+        self._slots_checked[post_id] = [slot]
+        return {
+            "tool": "notify_buyer_slot_freed",
+            "success": True,
+            "message": f"Buyer notified and confirmed {slot} for {post_id}. Ready to book.",
+            "post_id": post_id,
+            "slot": slot,
+        }
+
+    # ------------------------------------------------------------------ #
+    #  Scenario 3: Multi-visit preference evolution tools                 #
+    # ------------------------------------------------------------------ #
+
+    def _tool_debrief_visit(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        if self._scenario["task_id"] != "task_multi_visit_preference_evolution":
+            return {"tool": "debrief_visit", "success": False, "message": "Not applicable in this scenario."}
+        post_id = str(arguments.get("post_id", ""))
+        user_feedback = str(arguments.get("user_feedback", "")).lower()
+        new_prefs: list[str] = []
+        if any(kw in user_feedback for kw in ["noisy", "noise", "loud"]):
+            if "quiet_area" not in self._state.gathered_fields:
+                self._state.gathered_fields.append("quiet_area")
+                new_prefs.append("quiet_area")
+        if any(kw in user_feedback for kw in ["gym", "fitness", "workout"]):
+            if "gym_nearby" not in self._state.gathered_fields:
+                self._state.gathered_fields.append("gym_nearby")
+                new_prefs.append("gym_nearby")
+        pref_str = ", ".join(new_prefs) if new_prefs else "none new"
+        return {
+            "tool": "debrief_visit",
+            "success": True,
+            "message": f"Visit to {post_id} debriefed. Discovered preferences: {pref_str}.",
+            "post_id": post_id,
+            "discovered_preferences": new_prefs,
+        }
+
+    def _tool_filter_new_arrivals(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        if self._scenario["task_id"] != "task_multi_visit_preference_evolution":
+            return {"tool": "filter_new_arrivals", "success": False, "message": "Not applicable in this scenario."}
+        post_ids = list(arguments.get("post_ids", []))
+        gathered = set(self._state.gathered_fields)
+        buyer = self._scenario["buyer_profile"]
+        buyer_areas = set(buyer["areas"])
+        budget = buyer["budget_max"]
+        relevant: list[str] = []
+        irrelevant: list[str] = []
+        for post_id in post_ids:
+            post = self._posts.get(post_id)
+            if not post:
+                irrelevant.append(post_id)
+                continue
+            amenities = post.get("amenities", {})
+            if post["area"] not in buyer_areas or post["rent"] > budget:
+                irrelevant.append(post_id)
+                continue
+            if "quiet_area" in gathered and not amenities.get("quiet"):
+                irrelevant.append(post_id)
+                continue
+            if "gym_nearby" in gathered and not amenities.get("gym_nearby"):
+                irrelevant.append(post_id)
+                continue
+            relevant.append(post_id)
+        return {
+            "tool": "filter_new_arrivals",
+            "success": True,
+            "message": (
+                f"Filtered {len(post_ids)} new listings: "
+                f"{len(relevant)} relevant, {len(irrelevant)} irrelevant given current preferences."
+            ),
+            "relevant_post_ids": relevant,
+            "irrelevant_post_ids": irrelevant,
+        }
+
+    def _apply_post_arrival_event(self, visit_number: int) -> None:
+        """Inject new posts into the available pool after a visit milestone (Scenario 3)."""
+        config = self._scenario.get("scenario_creation_config", {})
+        for event in config.get("post_arrival_events", []):
+            if event["after_visit"] == visit_number and visit_number not in self._post_arrivals_fired:
+                self._post_arrivals_fired.add(visit_number)
+                for new_post_id in event["new_post_ids"]:
+                    if new_post_id in POSTS and new_post_id not in self._posts:
+                        self._posts[new_post_id] = deepcopy(POSTS[new_post_id])
+                    if new_post_id not in self._available_post_ids:
+                        self._available_post_ids.append(new_post_id)
 
     def _tool_store_seller_details(self, arguments: dict[str, Any]) -> dict[str, Any]:
         del arguments
@@ -818,29 +1140,23 @@ class FlatmateEpisode:
         return {"tool": "check_table_slot_matches", "success": True, "message": "Buyer-seller slot overlap checked.", "slot_matches": matches}
 
     def _infer_followup_post_and_time(self, arguments: dict[str, Any]) -> tuple[str, str]:
-        post_id = str(arguments.get("post_id") or arguments.get("post") or self._dynamic_post_id or "post_dynamic_followup_1")
-        time_text = str(arguments.get("time_text") or arguments.get("time") or arguments.get("slot") or "")
-        if time_text:
-            return post_id, time_text
+        post_id = str(arguments.get("post_id") or self._dynamic_post_id or "post_dynamic_followup_1")
+        time_text = str(arguments.get("time_text") or "")
 
-        candidate_slots: list[str] = []
-        slot_matches = arguments.get("slot_matches")
-        if isinstance(slot_matches, dict):
-            for key, value in slot_matches.items():
-                if not arguments.get("post_id"):
-                    post_id = str(key)
-                if isinstance(value, list):
-                    candidate_slots.extend(str(item) for item in value)
-        calendar_slots = arguments.get("calendar_slots")
-        if isinstance(calendar_slots, list):
-            candidate_slots.extend(str(item) for item in calendar_slots)
-        candidate_slots.extend(self._slots_checked.get(post_id, []))
+        if not time_text:
+            slot_matches = arguments.get("slot_matches")
+            if isinstance(slot_matches, dict):
+                for key, value in slot_matches.items():
+                    if not arguments.get("post_id"):
+                        post_id = str(key)
+                    if isinstance(value, list) and value:
+                        time_text = str(value[0])
+                        break
+            if not time_text:
+                calendar_slots = arguments.get("calendar_slots")
+                if isinstance(calendar_slots, list) and calendar_slots:
+                    time_text = str(calendar_slots[0])
 
-        for preferred in ["Sunday 5pm", "Saturday 4pm"]:
-            if preferred in candidate_slots:
-                return post_id, preferred
-        if candidate_slots:
-            return post_id, candidate_slots[0]
         return post_id, time_text
 
     def _tool_confirm_seller_match(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -925,49 +1241,53 @@ class FlatmateEpisode:
     def _feedback_summary(self, status: str, message: str, last_tool_result: dict[str, Any]) -> str:
         tool_name = str(last_tool_result.get("tool", ""))
         tool_message = str(last_tool_result.get("message", "")).strip()
+        success = bool(last_tool_result.get("success"))
+
         if tool_name == "store_user_details" and "Missing buyer fields:" in tool_message:
             missing = tool_message.split("Missing buyer fields:", 1)[1].strip()
-            return f"Ask the buyer for these missing fields before storing details: {missing}."
+            return f"store_user_details failed: missing fields {missing}."
         if tool_name == "store_seller_details" and "Missing seller fields:" in tool_message:
             missing = tool_message.split("Missing seller fields:", 1)[1].strip()
-            return f"Ask the seller for these missing fields before storing details: {missing}."
-        if tool_name == "search_posts" and last_tool_result.get("success") and not last_tool_result.get("post_ids"):
-            return "No current listing fits the buyer's stored visit availability. Close the buyer conversation before waiting for a seller follow-up."
-        if tool_name == "search_posts" and last_tool_result.get("success"):
-            return "Search results are ready. Evaluate matching listings next."
-        if tool_name == "store_seller_details" and last_tool_result.get("success"):
-            post_id = str(last_tool_result.get("post_id", "the new post"))
-            return f"Seller profile is stored as {post_id}. Match this post against the stored buyer profile next."
-        if tool_name == "match_location_preference" and last_tool_result.get("success") and self._state.phase == "seller":
-            return "Location preference has been checked for the new seller post. Check buyer-seller slot overlap next."
-        if tool_name == "check_table_slot_matches" and last_tool_result.get("success"):
-            return "Buyer-seller slot overlap is available. Confirm one matching slot with the seller next."
-        if tool_name == "confirm_seller_match" and last_tool_result.get("success"):
-            return "Seller has confirmed the slot. Offer the matched listing and slot back to the buyer next."
-        if tool_name == "offer_matched_listing_to_buyer" and last_tool_result.get("success"):
-            return "Buyer has confirmed the matched slot. Schedule the table visit next."
-        if tool_name == "check_calendar_slots" and last_tool_result.get("success"):
-            return "Calendar slots are available. Ask the buyer to confirm one matching time before contacting the poster."
-        if tool_name == "contact_poster" and last_tool_result.get("success"):
-            return "The poster has confirmed the requested time. Book only after the buyer explicitly confirms the same slot."
-        if tool_name == "book_viewing" and last_tool_result.get("success"):
-            return "A viewing has been booked successfully."
+            return f"store_seller_details failed: missing fields {missing}."
+        if tool_name == "search_posts" and success and not last_tool_result.get("post_ids"):
+            return "search_posts returned 0 results."
+        if tool_name == "search_posts" and success:
+            return f"search_posts returned {len(last_tool_result.get('post_ids', []))} result(s)."
+        if tool_name == "store_seller_details" and success:
+            post_id = str(last_tool_result.get("post_id", ""))
+            return f"Seller profile stored{(' as ' + post_id) if post_id else ''}."
+        if tool_name == "confirm_negotiated_deal" and success:
+            return f"Deal confirmed at Rs. {last_tool_result.get('agreed_rent', '?')}."
+        if tool_name == "add_to_waitlist" and success:
+            return f"Buyer added to waitlist for {last_tool_result.get('post_id', '?')}."
+        if tool_name == "notify_buyer_slot_freed" and success:
+            return f"Buyer notified of freed slot {last_tool_result.get('slot', '?')} — ready to book."
+        if tool_name == "debrief_visit" and success:
+            prefs = last_tool_result.get("discovered_preferences", [])
+            return f"debrief_visit succeeded. Discovered: {', '.join(prefs) if prefs else 'no new preferences'}."
+        if tool_name == "filter_new_arrivals" and success:
+            rel = last_tool_result.get("relevant_post_ids", [])
+            return f"filter_new_arrivals: {len(rel)} relevant listing(s) found."
+        if tool_name in {"match_location_preference", "check_table_slot_matches", "confirm_seller_match",
+                         "offer_matched_listing_to_buyer", "check_calendar_slots", "contact_poster",
+                         "propose_price_to_buyer", "propose_price_to_seller", "shortlist"} and success:
+            return f"{tool_name} succeeded."
+        if tool_name == "book_viewing" and success:
+            return "Viewing booked."
         if "action_loop_detected" in self._violations:
-            return "Repeated identical actions triggered loop protection. Change strategy instead of repeating the same step."
-        if "non_canonical_order" in self._violations:
-            return "The broker used a legal non-canonical order. Continue with the next valid recovery step."
+            return "Loop detected: identical action repeated. Try a different action."
         if self._state.phase == "buyer" and not self._state.buyer_profile_stored:
             missing = self._remaining_fields()
             if missing:
-                return f"Collect the buyer information still needed to continue: {', '.join(missing)}."
+                return f"Missing buyer fields: {', '.join(missing)}."
         if self._state.phase == "seller" and not self._state.seller_profile_stored:
             missing = self._remaining_fields()
             if missing:
-                return f"Collect the seller information still needed to continue: {', '.join(missing)}."
+                return f"Missing seller fields: {', '.join(missing)}."
         if message:
             return message
         if status == "ready":
-            return "Review the visible conversation and take the next valid step."
+            return "Scenario started."
         return ""
 
     def _strict_eval_observation(self, observation: FlatmateRlObservation) -> FlatmateRlObservation:
