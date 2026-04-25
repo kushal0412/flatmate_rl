@@ -192,23 +192,23 @@ def test_heuristic_policy_progresses_after_confirmation_in_single_visit() -> Non
     assert obs.booked_visits == [{"post_id": "post_023", "time": "Saturday 11am"}]
 
 
-def test_expected_flow_violation_gets_large_penalty() -> None:
+def test_redundant_successful_tool_call_gets_small_penalty_without_termination() -> None:
     env = FlatmateRlEnvironment()
     env.reset(scenario_id="task_visit_single")
 
     _msg(env, "Please share your dietary preference and visit availability.")
     _tool(env, "store_user_details")
     _tool(env, "search_posts")
-    wrong_next_step = _tool(env, "search_posts")
+    redundant_step = _tool(env, "search_posts")
 
-    assert wrong_next_step.done is True
-    assert wrong_next_step.status == "failed"
-    assert wrong_next_step.step_reward == -9.9
-    assert "expected flow violation" in wrong_next_step.message.lower()
-    assert "expected_flow_violation" in wrong_next_step.violations
+    assert redundant_step.done is False
+    assert redundant_step.status == "tool_result"
+    assert redundant_step.step_reward == -0.05
+    assert "redundant_tool_call" in redundant_step.message
+    assert "redundant_tool_call" in redundant_step.violations
 
 
-def test_seller_followup_wrong_step_gets_large_penalty() -> None:
+def test_seller_followup_non_canonical_tool_order_gets_small_penalty_without_termination() -> None:
     env = FlatmateRlEnvironment()
     env.reset(scenario_id="task_visit_single_seller_followup")
 
@@ -217,11 +217,24 @@ def test_seller_followup_wrong_step_gets_large_penalty() -> None:
     _tool(env, "search_posts")
     wrong_transition = _tool(env, "match_location_preference", post_ids=["post_131"])
 
-    assert wrong_transition.done is True
-    assert wrong_transition.status == "failed"
-    assert wrong_transition.step_reward == -9.9
-    assert "expected next step" in wrong_transition.message.lower()
-    assert "expected_flow_violation" in wrong_transition.violations
+    assert wrong_transition.done is False
+    assert wrong_transition.status == "tool_result"
+    assert wrong_transition.step_reward == -0.1
+    assert "non_canonical_order: expected close_buyer_conversation, got match_location_preference" in wrong_transition.message
+    assert "non_canonical_order" in wrong_transition.violations
+
+
+def test_legal_non_canonical_tool_after_store_can_continue() -> None:
+    env = FlatmateRlEnvironment()
+    env.reset(scenario_id="task_visit_single")
+
+    _msg(env, "Please share your dietary preference and visit availability.")
+    _tool(env, "store_user_details")
+    obs = _tool(env, "match_location_preference", post_ids=["post_023"])
+
+    assert obs.done is False
+    assert obs.step_reward == -0.1
+    assert "non_canonical_order" in obs.violations
 
 
 def test_seller_followup_search_returns_no_visit_compatible_current_posts() -> None:

@@ -37,6 +37,7 @@ SELLER_TOOLS = [
     "offer_matched_listing_to_buyer",
     "schedule_table_visit",
 ]
+ALL_TOOLS = set(BUYER_TOOLS + SELLER_TOOLS)
 BUYER_FIELD_KEYWORDS = {
     "budget": ("budget", "rs.", "20,000"),
     "diet": ("diet", "non-veg", "vegetarian"),
@@ -161,7 +162,7 @@ class FlatmateEpisode:
             observation = self._handle_assistant_message(action.assistant_message)
         else:
             observation = self._handle_tool_call(action.tool_name, action.tool_arguments)
-        return self._apply_expected_flow_penalty(observation, action, expected_action)
+        return self._apply_flow_adjustment(observation, action, expected_action)
 
     def state(self) -> FlatmateRlState:
         return self._state
@@ -239,50 +240,128 @@ class FlatmateEpisode:
         if action is None:
             return "null"
         if action.action_type == "assistant_message":
-            payload = {
-                "action_type": action.action_type,
-                "assistant_message": action.assistant_message,
-            }
-        else:
-            payload = {
-                "action_type": action.action_type,
-                "tool_name": action.tool_name,
-                "tool_arguments": action.tool_arguments,
-            }
-        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            return "assistant_message"
+        return action.tool_name
 
-    def _apply_expected_flow_penalty(
+    def _missing_required_args(self, action: FlatmateRlAction) -> list[str]:
+        if action.action_type != "tool_call":
+            return []
+        args = action.tool_arguments
+        tool_name = action.tool_name
+        if tool_name in {"contact_poster", "book_viewing"}:
+            return [field for field in ["post_id", "time_text"] if not args.get(field)]
+        if tool_name in {"match_location_preference", "get_commute_time", "check_calendar_slots"} and self._state.phase == "buyer":
+            return ["post_ids"] if not args.get("post_ids") else []
+        return []
+
+    def _is_redundant_successful_tool_call(self, action: FlatmateRlAction) -> bool:
+        if action.action_type != "tool_call":
+            return False
+        current_args = json.dumps(action.tool_arguments or {}, ensure_ascii=False, sort_keys=True)
+        for trace in self._tool_trace[-6:-1]:
+            if not trace.get("success"):
+                continue
+            previous_args = json.dumps(trace.get("args") or {}, ensure_ascii=False, sort_keys=True)
+            if trace.get("tool") == action.tool_name and previous_args == current_args:
+                return True
+        return False
+
+    def _book_viewing_violation_category(self, action: FlatmateRlAction) -> tuple[str, str] | None:
+        if action.action_type != "tool_call" or action.tool_name != "book_viewing":
+            return None
+        post_id = str(action.tool_arguments.get("post_id", ""))
+        time_text = str(action.tool_arguments.get("time_text", ""))
+        checked_slots = self._slots_checked.get(post_id, [])
+        if not checked_slots:
+            return "missing_prerequisite", "book_viewing requires a successful check_calendar_slots for that post first"
+        if time_text not in checked_slots:
+            return "calendar_mismatch", f"book_viewing slot {time_text or '<missing>'} was not returned by check_calendar_slots for {post_id or '<missing>'}"
+        if self._poster_confirmations.get(post_id) != time_text or self._client_confirmations.get(post_id) != time_text:
+            return "consent_violation", "book_viewing requires both buyer and poster confirmation for the same slot"
+        return None
+
+    def _classify_flow_adjustment(
+        self,
+        observation: FlatmateRlObservation,
+        actual_action: FlatmateRlAction,
+        expected_action: FlatmateRlAction | None,
+    ) -> tuple[str, float | None, bool, str] | None:
+        if actual_action.action_type == "tool_call":
+            if actual_action.tool_name not in ALL_TOOLS:
+                return "hallucination", -1.0, True, f"unknown tool {actual_action.tool_name}"
+            missing_args = self._missing_required_args(actual_action)
+            if missing_args:
+                return "hallucination", -1.0, True, f"{actual_action.tool_name} missing required args: {', '.join(missing_args)}"
+
+            if not (observation.done and "action_loop_detected" in self._violations):
+                booking_violation = self._book_viewing_violation_category(actual_action)
+                if booking_violation is not None:
+                    category, detail = booking_violation
+                    return category, -0.5, False, detail
+
+            last_message = str(observation.last_tool_result.get("message", "")).lower()
+            if "must be called before" in last_message or "before closing" in last_message:
+                return "missing_prerequisite", -0.5, False, observation.last_tool_result.get("message", "")
+
+            if self._is_redundant_successful_tool_call(actual_action):
+                return "redundant_tool_call", -0.05, False, f"repeated successful {actual_action.tool_name} call within last 5 steps"
+
+        if self._actions_match_expected_flow(actual_action, expected_action):
+            if float(observation.step_reward) >= 0.0:
+                return "on_canonical_path", 0.1, False, "matched expected action"
+            return "on_canonical_path", None, False, "matched expected action"
+
+        expected = self._describe_action(expected_action)
+        got = self._describe_action(actual_action)
+        return "non_canonical_order", -0.1, False, f"expected {expected}, got {got}"
+
+    def _apply_flow_adjustment(
         self,
         observation: FlatmateRlObservation,
         actual_action: FlatmateRlAction,
         expected_action: FlatmateRlAction | None,
     ) -> FlatmateRlObservation:
-        if self._actions_match_expected_flow(actual_action, expected_action):
+        adjustment = self._classify_flow_adjustment(observation, actual_action, expected_action)
+        if adjustment is None:
             return observation
 
-        self._record_violation("expected_flow_violation")
-        self._total_reward -= 10.0
-        self._done = True
-        self._state.done = True
-        self._state.status = "failed"
+        category, replacement_reward, terminate, detail = adjustment
+        if category == "on_canonical_path" and replacement_reward is None:
+            return observation
+
+        if category != "on_canonical_path":
+            self._record_violation(category)
+
+        payload = observation.model_dump()
+        previous_reward = float(payload.get("step_reward", 0.0))
+        if replacement_reward is not None:
+            reward_delta = replacement_reward - previous_reward
+            self._total_reward += reward_delta
+            payload["step_reward"] = replacement_reward
+            payload["reward"] = replacement_reward
+        else:
+            reward_delta = 0.0
+
+        if terminate:
+            self._done = True
+            self._state.done = True
+            self._state.status = "failed"
+            payload["status"] = "failed"
+            payload["done"] = True
+
         self._state.total_reward = self._total_reward
         self._state.tool_trace = deepcopy(self._tool_trace)
-        payload = observation.model_dump()
-        payload["status"] = "failed"
-        payload["done"] = True
-        payload["violations"] = list(self._violations)
-        payload["step_reward"] = float(payload.get("step_reward", 0.0)) - 10.0
         payload["total_reward"] = self._total_reward
-        payload["reward"] = float(payload.get("reward", 0.0)) - 10.0
-        payload["message"] = (
-            f"{observation.message} Expected flow violation. "
-            f"Expected next step `{self._describe_action(expected_action)}` but received `{self._describe_action(actual_action)}`."
-        ).strip()
-        raw_penalized = FlatmateRlObservation.model_validate(payload)
-        self._last_observation = raw_penalized
+        payload["violations"] = list(self._violations)
+        if reward_delta:
+            payload["message"] = f"{observation.message} {category}: {detail}.".strip()
+        else:
+            payload["message"] = observation.message
+        adjusted = FlatmateRlObservation.model_validate(payload)
+        self._last_observation = adjusted
         if self._strict_eval_mode:
-            return self._strict_eval_observation(raw_penalized)
-        return raw_penalized
+            return self._strict_eval_observation(adjusted)
+        return adjusted
 
     def _action_signature(self, action_type: str, content: str = "", tool_name: str = "", arguments: dict[str, Any] | None = None) -> str:
         if action_type == "assistant_message":
@@ -844,8 +923,8 @@ class FlatmateEpisode:
             return "A viewing has been booked successfully."
         if "action_loop_detected" in self._violations:
             return "Repeated identical actions triggered loop protection. Change strategy instead of repeating the same step."
-        if "expected_flow_violation" in self._violations:
-            return "The broker deviated from the scenario's expected flow. Follow the next required action exactly."
+        if "non_canonical_order" in self._violations:
+            return "The broker used a legal non-canonical order. Continue with the next valid recovery step."
         if self._state.phase == "buyer" and not self._state.buyer_profile_stored:
             missing = self._remaining_fields()
             if missing:
