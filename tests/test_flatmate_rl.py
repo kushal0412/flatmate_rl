@@ -497,3 +497,20 @@ def test_conflict_check_heuristic_books_only_available_slot() -> None:
 
     assert obs.done is True
     assert obs.booked_visits == [{"post_id": "post_142", "time": "Sunday 5pm"}]
+
+
+def test_negotiation_heuristic_confirms_deal_with_agreed_rent() -> None:
+    env = FlatmateRlEnvironment()
+    obs = env.reset(scenario_id="task_negotiation_hidden_budget")
+
+    for _ in range(14):
+        payload = expected_policy_action("task_negotiation_hidden_budget", obs.model_dump())
+        assert payload is not None
+        obs = env.step(FlatmateRlAction.model_validate(payload))
+        if obs.done:
+            break
+
+    assert obs.done is True
+    assert obs.status == "completed"
+    assert obs.booked_visits == [{"post_id": "post_155", "time": "negotiated_deal", "agreed_rent": 21000}]
+    assert obs.last_tool_result["tool"] == "confirm_negotiated_deal"

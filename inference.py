@@ -368,6 +368,8 @@ def build_user_prompt(step: int, observation: Any) -> str:
         Status: {observation.status}
         Available tools: {observation.available_tools}
         Last tool result: {json.dumps(last_tool_result, ensure_ascii=False)}
+        Prerequisites satisfied: {json.dumps(observation.prerequisites_satisfied, ensure_ascii=False)}
+        Recent tool calls: {json.dumps(observation.recent_tool_calls, ensure_ascii=False)}
         Booked visits: {observation.booked_visits}
 
         Buyer/Broker transcript:
