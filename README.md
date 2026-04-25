@@ -1,8 +1,8 @@
 ---
 title: Flatmate RL
 emoji: 🏠
-colorFrom: amber
-colorTo: teal
+colorFrom: yellow
+colorTo: green
 sdk: docker
 pinned: false
 app_port: 8000
