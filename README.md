@@ -1,17 +1,22 @@
 ---
-title: Flatmate RL
-emoji: 🏠
-colorFrom: yellow
-colorTo: green
+title: Flatmate RL Broker Environment
+emoji: 🏘️
+colorFrom: indigo
+colorTo: emerald
 sdk: docker
 pinned: false
 app_port: 8000
 base_path: /web
 tags:
   - openenv
-  - flatmate
-  - scheduling
   - reinforcement-learning
+  - agents
+  - tool-use
+  - flatmate-search
+  - housing
+  - scheduling
+  - fastapi
+  - docker
 ---
 
 # Flatmate RL
