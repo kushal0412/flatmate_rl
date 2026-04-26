@@ -85,11 +85,11 @@ That is the product gap Flatmate RL is trying to model.
 
 Flatmate RL is an OpenEnv reinforcement-learning environment for training broker-style agents.
 
-The agent is placed inside a simulated flatmate-search workflow. It sees the current state of the buyer, seller, listings, messages, calendar slots, and previous actions.
+The agent is placed inside a simulated flatmate-search workflow. It sees the current search state: preferences, listings, messages, calendar slots, and previous actions.
 
 At every step, it must choose one action:
 
-- send a message to the buyer or seller
+- send a message when more information or confirmation is needed
 - call a structured broker tool
 
 The goal is not just to recommend a post. The goal is to complete the workflow correctly.
@@ -254,6 +254,8 @@ Bad behavior gets penalized:
 - booking without consent
 - ignoring calendar conflicts
 - getting stuck in loops
+
+Over time, the overall loss should go down because the agent makes fewer workflow errors. In this environment, lower error means fewer invalid tool calls, fewer missed confirmations, fewer bad slot choices, and more completed bookings or deals.
 
 ## What Success Looks Like
 

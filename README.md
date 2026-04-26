@@ -23,6 +23,8 @@ tags:
 
 Flatmate RL is a deterministic OpenEnv reinforcement-learning environment for broker agents. It models flatmate-share search as a multi-step workflow where the policy must gather details, inspect listings, check slots, coordinate buyer/seller confirmations, and schedule visits only when the guardrails are satisfied.
 
+![Flatmate RL app screenshot](screenshot.png)
+
 Read the full project writeup: [Flatmate RL: Training Broker Agents for Real Flatmate Search](flatmate_rl.md).
 
 ## Environment Flow
