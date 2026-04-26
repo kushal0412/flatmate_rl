@@ -9,7 +9,7 @@ from flatmate_rl.server.heuristic_policy import expected_policy_action
 
 HEURISTIC_BASELINES = {
     "task_visit_single": 0.70,
-    "task_visit_single_hidden_flex": -1.70,
+    "task_visit_single_hidden_flex": 0.90,
     "task_visit_multi": 1.10,
     "task_visit_single_seller_followup": 0.90,
 }

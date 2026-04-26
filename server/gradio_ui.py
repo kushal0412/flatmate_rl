@@ -65,6 +65,28 @@ SYSTEM_PROMPT = textwrap.dedent(
     - If a tool can perform the next required operation, call the tool immediately.
     - Do not send acknowledgement or progress messages such as "I will search now" when a tool call is needed.
     - Prefer safe, incremental progress toward storing user details, matching listings, and booking visits.
+    - Use the exact argument names in the tool contract. Never invent aliases such as visit_time.
+    - Never call book_viewing until buyer_confirmed and poster_confirmed are both true in prerequisites_satisfied.
+    """
+).strip()
+
+TOOL_CONTRACT_PROMPT = textwrap.dedent(
+    """
+    Tool argument contract:
+    - store_user_details: tool_arguments can be {} after required buyer fields are gathered.
+    - search_posts: tool_arguments can be {}.
+    - match_location_preference: {"post_ids":["post_id", ...]}.
+    - get_commute_time: {"post_ids":["post_id", ...]}.
+    - check_calendar_slots: {"post_ids":["post_id", ...]}.
+    - shortlist: {"post_ids":["post_id", ...]}.
+    - contact_poster: {"post_id":"post_id","time_text":"exact slot from check_calendar_slots"}. This shows the buyer profile to the seller/poster and asks the seller/poster to confirm both profile fit and visit time.
+    - book_viewing: {"post_id":"post_id","time_text":"same exact slot confirmed by buyer and poster"}.
+
+    Booking workflow:
+    1. After check_calendar_slots, send an assistant_message to the buyer proposing one exact available slot.
+    2. Wait for the buyer response to explicitly confirm that slot.
+    3. Call contact_poster with post_id and time_text for the same slot.
+    4. Only after both buyer_confirmed and poster_confirmed are true, call book_viewing with post_id and time_text.
     """
 ).strip()
 
@@ -102,13 +124,59 @@ def _serialize_reset(web_manager, observation) -> dict[str, Any]:
 
 
 def _chatbot_rows(history: list[dict[str, Any]]) -> list[dict[str, str]]:
-    return [
-        {
+    rows: list[dict[str, str]] = []
+    for entry in history:
+        content = entry.get("content", "")
+        if content is None:
+            content = ""
+        rows.append(
+            {
             "role": "assistant" if entry.get("role") == "assistant" else "user",
-            "content": str(entry.get("content", "")),
-        }
-        for entry in history
-    ]
+                "content": content if isinstance(content, str) else json.dumps(content, ensure_ascii=False),
+            }
+        )
+    return rows
+
+
+def _empty_chat_row(message: str) -> list[dict[str, str]]:
+    return [{"role": "assistant", "content": message}]
+
+
+SELLER_FACING_TOOLS = {
+    "contact_poster",
+    "propose_price_to_seller",
+    "store_seller_details",
+    "confirm_seller_match",
+    "check_table_slot_matches",
+    "schedule_table_visit",
+}
+
+
+def _seller_tool_rows(observation: dict[str, Any]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    tool_results_by_name: dict[str, list[dict[str, Any]]] = {}
+    for result in observation.get("tool_results", []):
+        tool_results_by_name.setdefault(str(result.get("tool", "")), []).append(result)
+
+    for trace in observation.get("tool_trace", []):
+        tool_name = str(trace.get("tool", ""))
+        if tool_name not in SELLER_FACING_TOOLS:
+            continue
+        args = trace.get("args") or {}
+        result = tool_results_by_name.get(tool_name, [{}]).pop(0)
+        rows.append(
+            {
+                "role": "assistant",
+                "content": f"{tool_name}({json.dumps(args, ensure_ascii=False, sort_keys=True)})",
+            }
+        )
+        rows.append(
+            {
+                "role": "user",
+                "content": str(result.get("message") or trace.get("message") or "No seller/tool feedback message."),
+            }
+        )
+    return rows
 
 
 def _json_text(payload: Any) -> str:
@@ -159,6 +227,8 @@ def _build_user_prompt(step: int, observation: dict[str, Any]) -> str:
         f"""
         Step: {step}
 
+        {TOOL_CONTRACT_PROMPT}
+
         OpenEnv observation / broker feedback:
         {_json_text(_feedback_payload(observation))}
 
@@ -207,7 +277,14 @@ def _call_broker_llm(observation: dict[str, Any], step: int) -> tuple[FlatmateRl
         "model": MODEL_NAME,
         "api_base_url": API_BASE_URL,
         "system_prompt": SYSTEM_PROMPT,
-        "user_prompt": user_prompt,
+        "prompt": {
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": "See the exact OpenEnv observation / feedback panel rendered beside this LLM result."},
+            ],
+            "openenv_feedback_panel_is_user_prompt_payload": True,
+            "user_prompt_bytes": len(user_prompt.encode("utf-8")),
+        },
         "raw_response": raw_text,
         "parsed_action": action.model_dump(exclude_none=True),
         "error": None,
@@ -216,12 +293,20 @@ def _call_broker_llm(observation: dict[str, Any], step: int) -> tuple[FlatmateRl
 
 
 def _error_llm_state(observation: dict[str, Any], step: int, exc: Exception) -> dict[str, Any]:
+    user_prompt = _build_user_prompt(step=step, observation=observation)
     return {
         "step": step,
         "model": MODEL_NAME,
         "api_base_url": API_BASE_URL,
         "system_prompt": SYSTEM_PROMPT,
-        "user_prompt": _build_user_prompt(step=step, observation=observation),
+        "prompt": {
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": "See the exact OpenEnv observation / feedback panel rendered beside this LLM result."},
+            ],
+            "openenv_feedback_panel_is_user_prompt_payload": True,
+            "user_prompt_bytes": len(user_prompt.encode("utf-8")),
+        },
         "raw_response": "",
         "parsed_action": None,
         "error": str(exc),
@@ -237,7 +322,14 @@ def _default_ui_state(task_id: str) -> dict[str, Any]:
             "model": MODEL_NAME,
             "api_base_url": API_BASE_URL,
             "system_prompt": SYSTEM_PROMPT,
-            "user_prompt": "",
+            "prompt": {
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": "Scenario has not started yet."},
+                ],
+                "openenv_feedback_panel_is_user_prompt_payload": True,
+                "user_prompt_bytes": 0,
+            },
             "raw_response": "",
             "parsed_action": None,
             "error": None,
@@ -252,10 +344,30 @@ def _outputs(task_id: str, observation: dict[str, Any], llm_state: dict[str, Any
         "llm_state": llm_state,
     }
     done = _is_done(observation)
+    buyer_rows = _chatbot_rows(observation.get("buyer_conversation_history", []))
+    seller_rows = _chatbot_rows(observation.get("seller_conversation_history", []))
+    if not seller_rows:
+        seller_rows = _seller_tool_rows(observation)
+    if not buyer_rows:
+        buyer_rows = _empty_chat_row("No buyer/user transcript has been exposed by OpenEnv yet.")
+    if not seller_rows:
+        seller_rows = _empty_chat_row(
+            "No seller/broker transcript has been exposed by OpenEnv yet. "
+            "It will appear after a seller phase starts or the broker contacts a poster."
+        )
+    logger.info(
+        "ui_outputs task_id=%s done=%s buyer_rows=%s seller_rows=%s feedback_bytes=%s llm_bytes=%s",
+        task_id,
+        done,
+        len(buyer_rows),
+        len(seller_rows),
+        len(_json_text(_feedback_payload(observation)).encode("utf-8")),
+        len(_json_text(llm_state).encode("utf-8")),
+    )
     return (
         _status_html(observation, llm_state),
-        _chatbot_rows(observation.get("buyer_conversation_history", [])),
-        _chatbot_rows(observation.get("seller_conversation_history", [])),
+        buyer_rows,
+        seller_rows,
         _feedback_payload(observation),
         llm_state,
         gr.update(interactive=not done),

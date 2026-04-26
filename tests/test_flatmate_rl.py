@@ -200,8 +200,17 @@ def test_single_visit_scenario_books_one_visit() -> None:
     assert final_obs.done is True
     assert final_obs.booked_visits == [{"post_id": "post_023", "time": "Saturday 11am"}]
     assert len(final_obs.seller_conversation_history) >= 2
-    assert "Can we visit at Saturday 11am" in final_obs.seller_conversation_history[0]["content"]
+    assert final_obs.seller_conversation_history[0]["role"] == "assistant"
+    assert final_obs.seller_conversation_history[1]["role"] == "user"
+    assert "buyer profile" in final_obs.seller_conversation_history[0]["content"]
+    assert "budget up to Rs. 20000" in final_obs.seller_conversation_history[0]["content"]
+    assert "Can you confirm the buyer profile is acceptable" in final_obs.seller_conversation_history[0]["content"]
+    assert "Saturday 11am" in final_obs.seller_conversation_history[0]["content"]
+    assert "buyer profile is acceptable" in final_obs.seller_conversation_history[1]["content"]
     assert "Saturday 11am works for the visit" in final_obs.seller_conversation_history[1]["content"]
+    contact_result = next(result for result in final_obs.tool_results if result["tool"] == "contact_poster")
+    assert contact_result["buyer_profile_shared"] is True
+    assert contact_result["seller_profile_fit_confirmed"] is True
 
 
 def test_buyer_answers_diet_and_availability_when_broker_asks_for_both() -> None:
@@ -430,6 +439,10 @@ def test_hidden_flex_requires_alternative_slot_to_unlock_backup_availability() -
     obs = _msg(env, "No Tuesday slot matches. I can offer Saturday 1pm or Sunday 5pm instead.")
     assert "confirm" in obs.last_user_message.lower()
     assert "Sunday 5pm" in obs.last_user_message or "Saturday 1pm" in obs.last_user_message
+    _tool(env, "contact_poster", post_id="post_023", time_text="Sunday 5pm")
+    obs = _tool(env, "book_viewing", post_id="post_023", time_text="Sunday 5pm")
+    assert obs.done is True
+    assert obs.booked_visits == [{"post_id": "post_023", "time": "Sunday 5pm"}]
 
 
 def test_multi_visit_scenario_books_two_visits() -> None:
@@ -533,3 +546,5 @@ def test_negotiation_heuristic_confirms_deal_with_agreed_rent() -> None:
     assert obs.status == "completed"
     assert obs.booked_visits == [{"post_id": "post_155", "time": "negotiated_deal", "agreed_rent": 21000}]
     assert obs.last_tool_result["tool"] == "confirm_negotiated_deal"
+    assert any("Would you accept Rs. 21000" in item["content"] for item in obs.seller_conversation_history)
+    assert any("I can accept Rs. 21000" in item["content"] for item in obs.seller_conversation_history)

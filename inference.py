@@ -71,6 +71,30 @@ SYSTEM_PROMPT = textwrap.dedent(
     - If a tool can perform the next required operation, call the tool immediately.
     - Do not send acknowledgement or progress messages such as "I will search now" when a tool call is needed.
     - Prefer safe, incremental progress toward storing user details, matching listings, and booking visits.
+    - Use exact tool argument names from the prompt. Never invent aliases such as visit_time.
+    - Treat negative reward, violations, and feedback_summary as corrective feedback for the next action.
+    """
+).strip()
+
+
+TOOL_CONTRACT_PROMPT = textwrap.dedent(
+    """
+    Tool argument contract:
+    - store_user_details: tool_arguments can be {} after required buyer fields are gathered.
+    - search_posts: tool_arguments can be {}.
+    - match_location_preference: {"post_ids":["post_id", ...]}.
+    - get_commute_time: {"post_ids":["post_id", ...]}.
+    - check_calendar_slots: {"post_ids":["post_id", ...]}.
+    - shortlist: {"post_ids":["post_id", ...]}.
+    - contact_poster: {"post_id":"post_id","time_text":"exact slot from check_calendar_slots"}. This shares the buyer profile with the seller/poster and asks them to confirm profile fit plus visit time.
+    - book_viewing: {"post_id":"post_id","time_text":"same exact slot confirmed by buyer and poster"}.
+
+    Booking workflow:
+    1. Ask for missing buyer fields before store_user_details.
+    2. Store buyer details, search posts, match location, get commute time, then check calendar slots.
+    3. Ask the buyer to confirm one exact slot from check_calendar_slots.
+    4. Call contact_poster with post_id and time_text for that same slot.
+    5. Only after buyer_confirmed and poster_confirmed are true, call book_viewing with post_id and time_text.
     """
 ).strip()
 
@@ -371,11 +395,19 @@ def build_user_prompt(step: int, observation: Any) -> str:
         Step: {step}
         Phase: {observation.phase}
         Status: {observation.status}
+        Feedback summary: {observation.feedback_summary}
+        Environment message: {observation.message}
+        Step reward: {observation.step_reward}
+        Total reward: {observation.total_reward}
+        Violations: {observation.violations}
+        Remaining required fields: {observation.remaining_required_fields}
         Available tools: {observation.available_tools}
         Last tool result: {json.dumps(last_tool_result, ensure_ascii=False)}
         Prerequisites satisfied: {json.dumps(observation.prerequisites_satisfied, ensure_ascii=False)}
         Recent tool calls: {json.dumps(observation.recent_tool_calls, ensure_ascii=False)}
         Booked visits: {observation.booked_visits}
+
+        {TOOL_CONTRACT_PROMPT}
 
         Buyer/Broker transcript:
         {json.dumps(observation.buyer_conversation_history[-8:], ensure_ascii=False)}

@@ -302,7 +302,7 @@ SCENARIOS = {
             required_bookings=1,
             required_tool_calls=["store_user_details", "search_posts", "match_location_preference", "get_commute_time", "check_calendar_slots", "contact_poster", "book_viewing"],
             required_info=["budget", "diet", "areas", "occupation", "visit_availability"],
-            success_condition="Broker must ask the client for visit availability, call check_calendar_slots for poster availability, propose a time that works for both, and book only after both client and poster explicitly say confirm for that same time.",
+            success_condition="Broker must ask the client for visit availability, call check_calendar_slots for poster availability, propose a time that works for the buyer, show the buyer profile to the seller/poster, and book only after both the buyer and seller/poster explicitly confirm the same time and the seller confirms the buyer profile fit.",
             min_viable_turns=6,
         ),
         scenario_creation_config={

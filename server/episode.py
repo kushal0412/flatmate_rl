@@ -95,6 +95,7 @@ class FlatmateEpisode:
         self._commutes_checked: dict[str, int] = {}
         self._poster_confirmations: dict[str, str] = {}
         self._client_confirmations: dict[str, str] = {}
+        self._seller_profile_fit_confirmations: dict[str, bool] = {}
         self._seller_confirmations: dict[str, str] = {}
         self._buyer_offer_confirmations: dict[str, str] = {}
         self._dynamic_post_id: str | None = None
@@ -136,6 +137,7 @@ class FlatmateEpisode:
         self._commutes_checked = {}
         self._poster_confirmations = {}
         self._client_confirmations = {}
+        self._seller_profile_fit_confirmations = {}
         self._seller_confirmations = {}
         self._buyer_offer_confirmations = {}
         self._dynamic_post_id = None
@@ -258,6 +260,12 @@ class FlatmateEpisode:
             if self._state.gathered_fields.count("hidden_flex_revealed"):
                 slots.extend(profile["hidden_additional_availability"])
         return slots
+
+    def _record_client_confirmation_for_slot(self, slot: str) -> None:
+        for post_id, checked_slots in self._slots_checked.items():
+            if slot in checked_slots:
+                self._client_confirmations[post_id] = slot
+                return
 
     def _record_violation(self, text: str) -> None:
         if text not in self._violations:
@@ -496,8 +504,10 @@ class FlatmateEpisode:
                 self._state.gathered_fields.append("hidden_flex_revealed")
             if alternatives_offered:
                 if "sunday 5pm" in lowered:
+                    self._record_client_confirmation_for_slot("Sunday 5pm")
                     return "I can make Sunday 5pm work, so I confirm Sunday 5pm."
                 if "saturday 1pm" in lowered:
+                    self._record_client_confirmation_for_slot("Saturday 1pm")
                     return "Saturday 1pm works for me too, so I confirm Saturday 1pm."
 
         # Scenario 2: waitlist — fire cancellation notification on first message after add_to_waitlist
@@ -861,6 +871,16 @@ class FlatmateEpisode:
         self._state.selected_posts = post_ids
         return {"tool": "shortlist", "success": True, "message": "Posts shortlisted.", "selected_posts": post_ids}
 
+    def _buyer_profile_summary_for_seller(self) -> str:
+        profile = self._scenario["buyer_profile"]
+        return (
+            f"buyer profile: budget up to Rs. {profile['budget_max']}; "
+            f"dietary preference {profile['dietary']}; "
+            f"preferred areas {', '.join(profile['areas'])}; "
+            f"occupation {profile['occupation']}; "
+            f"visit availability {', '.join(profile['visit_availability'])}"
+        )
+
     def _tool_contact_poster(self, arguments: dict[str, Any]) -> dict[str, Any]:
         post_id = arguments.get("post_id", "")
         time_text = arguments.get("time_text", "")
@@ -872,20 +892,34 @@ class FlatmateEpisode:
             return {"tool": "contact_poster", "success": False, "message": "Time must come from check_calendar_slots."}
         self._seller_history.append(
             {
-                "role": "user",
-                "content": f"Client selected {post_id}. Can we visit at {time_text}?",
+                "role": "assistant",
+                "content": (
+                    f"Client selected {post_id}. Please review this {self._buyer_profile_summary_for_seller()}. "
+                    f"Can you confirm the buyer profile is acceptable and that we can visit at {time_text}?"
+                ),
             }
         )
         self._poster_confirmations[post_id] = time_text
-        poster_message = f"Yes, confirmed. {time_text} works for the visit."
-        self._seller_history.append({"role": "assistant", "content": poster_message})
-        return {"tool": "contact_poster", "success": True, "message": f"Poster confirmed {time_text}.", "post_id": post_id, "time_text": time_text}
+        self._seller_profile_fit_confirmations[post_id] = True
+        poster_message = f"Yes, confirmed. The buyer profile is acceptable and {time_text} works for the visit."
+        self._seller_history.append({"role": "user", "content": poster_message})
+        return {
+            "tool": "contact_poster",
+            "success": True,
+            "message": f"Poster confirmed buyer profile fit and {time_text}.",
+            "post_id": post_id,
+            "time_text": time_text,
+            "buyer_profile_shared": True,
+            "seller_profile_fit_confirmed": True,
+        }
 
     def _tool_book_viewing(self, arguments: dict[str, Any]) -> dict[str, Any]:
         post_id = arguments.get("post_id", "")
         time_text = arguments.get("time_text", "")
         if post_id not in self._poster_confirmations or self._poster_confirmations[post_id] != time_text:
             return {"tool": "book_viewing", "success": False, "message": "Poster has not explicitly confirmed this time."}
+        if not self._seller_profile_fit_confirmations.get(post_id):
+            return {"tool": "book_viewing", "success": False, "message": "Poster has not confirmed the buyer profile fit."}
         if post_id not in self._client_confirmations or self._client_confirmations[post_id] != time_text:
             return {"tool": "book_viewing", "success": False, "message": "Client has not explicitly confirmed this time."}
         if self._scenario["task_id"] == "task_visit_multi" and post_id not in self._state.selected_posts:
@@ -940,8 +974,15 @@ class FlatmateEpisode:
         config = self._scenario["scenario_creation_config"].get("negotiation_config", {})
         seller_floor = config.get("seller_floor", 0)
         self._negotiation_rounds_seller += 1
+        self._seller_history.append(
+            {
+                "role": "assistant",
+                "content": f"The buyer is interested in {post_id}. Would you accept Rs. {proposed_rent}?",
+            }
+        )
         if proposed_rent >= seller_floor:
             self._seller_price_accepted = proposed_rent
+            self._seller_history.append({"role": "user", "content": f"Yes, I can accept Rs. {proposed_rent}."})
             return {
                 "tool": "propose_price_to_seller",
                 "success": True,
@@ -950,6 +991,7 @@ class FlatmateEpisode:
                 "proposed_rent": proposed_rent,
             }
         hint = " Maybe a small discount is possible." if self._negotiation_rounds_seller >= 2 else ""
+        self._seller_history.append({"role": "user", "content": f"I can't go as low as Rs. {proposed_rent}.{hint}"})
         return {
             "tool": "propose_price_to_seller",
             "success": True,
@@ -1167,9 +1209,9 @@ class FlatmateEpisode:
         post = self._resolve_post(post_id)
         if not post or time_text not in post["calendar_slots"]:
             return {"tool": "confirm_seller_match", "success": False, "message": "Selected seller slot is invalid."}
-        self._seller_history.append({"role": "user", "content": f"Can we confirm {time_text} for {post_id}?"})
+        self._seller_history.append({"role": "assistant", "content": f"Can we confirm {time_text} for {post_id}?"})
         self._seller_confirmations[post_id] = time_text
-        self._seller_history.append({"role": "assistant", "content": f"Confirmed, {time_text} works from the seller side."})
+        self._seller_history.append({"role": "user", "content": f"Confirmed, {time_text} works from the seller side."})
         return {"tool": "confirm_seller_match", "success": True, "message": f"Seller confirmed {time_text}.", "post_id": post_id, "time_text": time_text}
 
     def _tool_offer_matched_listing_to_buyer(self, arguments: dict[str, Any]) -> dict[str, Any]:
