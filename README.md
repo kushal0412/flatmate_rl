@@ -16,7 +16,22 @@ tags:
 
 # Flatmate RL
 
-An OpenEnv environment for training and evaluating agents on broker-style flatmate visit scheduling.
+Flatmate RL models flatmate-share search as a multi-step reinforcement-learning environment for broker agents. The task is not only retrieval. An agent must gather missing buyer or seller details, inspect listing metadata, check availability, coordinate both sides, and only schedule visits when the required constraints and confirmations are satisfied.
+
+The environment focuses on the operational loop behind a real flatmate search:
+
+1. Find posts that might match.
+2. Filter out bad or unavailable listings.
+3. Ask the buyer for missing preferences.
+4. Contact the listing owner or flatmate.
+5. Check whether the flat is still available.
+6. Match both sides on budget, lifestyle, location, commute, and visit time.
+7. Schedule visits without double-booking or assuming consent.
+8. Keep going when preferences change after real visits.
+
+Flatmate RL turns that workflow into a deterministic OpenEnv environment. At each step, the policy emits either a natural-language `assistant_message` or a structured `tool_call`. The environment updates conversation state, validates tool order and arguments, tracks buyer/seller confirmations, applies rewards and penalties, and returns a structured observation for the next policy decision.
+
+Read the full project writeup: [Flatmate RL: Training Broker Agents for Real Flatmate Search](flatmate_rl.md).
 
 This environment converts the `broker_app` visit-scheduling scenarios into a deterministic RL task where an agent must:
 
@@ -25,7 +40,21 @@ This environment converts the `broker_app` visit-scheduling scenarios into a det
 - respect scheduling and confirmation guardrails
 - book valid visits only after the required checks and confirmations succeed
 
-It also includes a custom Gradio UI mounted at `/web`.
+It also includes a FastAPI/OpenEnv server and a custom Gradio UI mounted at `/web`.
+
+## Environment Type
+
+`flatmate_rl` is built for RL over operational agent workflows:
+
+- **Runtime:** OpenEnv environment served through FastAPI.
+- **Interaction style:** mixed natural-language and structured tool-calling.
+- **Task domain:** Mumbai flatmate-share brokerage.
+- **Episode shape:** multi-step buyer/seller conversations with hidden state, tool prerequisites, confirmations, and terminal success conditions.
+- **Action schema:** `assistant_message` or `tool_call`.
+- **Observation schema:** visible conversation state, available tools, gathered fields, selected posts, booked visits, violations, and rewards.
+- **Deployment shape:** Docker Space on Hugging Face, with local Docker support.
+
+This makes the environment useful for training policies that need to learn *when* to ask for information, *which* tool to call, *what arguments* to pass, and *when not to book*.
 
 ## What This Environment Does
 
@@ -45,9 +74,9 @@ The environment tracks:
 
 The simulator is deterministic by design so it is easier to use for RL training, regression testing, and reward iteration.
 
-## Included Scenarios
+## Scenario Types
 
-The environment mirrors the main `broker_app` scenarios:
+The environment contains scenario families that model real flat-search failure modes:
 
 - `task_visit_single`
   One valid visit must be booked.
@@ -57,11 +86,59 @@ The environment mirrors the main `broker_app` scenarios:
   At least two valid non-overlapping visits must be booked.
 - `task_visit_single_seller_followup`
   The first buyer flow cannot book a visit, then a seller follow-up creates a new listing that can be matched and scheduled.
+- `task_negotiation_hidden_budget`
+  A strong listing is above the buyer's stated budget, but both buyer and seller have hidden negotiable price bounds.
+- `task_slot_cancellation_waitlist`
+  A desired listing is fully booked until a cancellation opens a previously unavailable slot.
+- `task_multi_visit_preference_evolution`
+  The buyer discovers new preferences after visits, so the agent must debrief, update the profile, filter new arrivals, and keep searching.
+- `task_visit_conflict_check`
+  A listing has some slots already reserved by other buyers, so the agent must read the conflict data and propose only an open slot.
 
 Scenario declarations live in:
 
-- [server/scenario_factory.py](/Users/kushaljaisinghani/Documents/sample_envs/flatmate_rl/server/scenario_factory.py)
-- [server/scenarios.py](/Users/kushaljaisinghani/Documents/sample_envs/flatmate_rl/server/scenarios.py)
+- [server/scenario_factory.py](server/scenario_factory.py)
+- [server/scenarios.py](server/scenarios.py)
+
+## Synthetic Data And No-Leakage Design
+
+The scenarios are synthetic. The environment does not depend on scraped listings, real buyer names, real seller names, phone numbers, emails, or private housing records.
+
+Scenario data is created through small factory helpers in [server/scenario_factory.py](server/scenario_factory.py):
+
+- `build_buyer_profile`
+- `build_seller_profile`
+- `build_post`
+- `build_ground_truth`
+- `build_visit_scenario`
+
+Seeded variation lives in [server/scenario_variants.py](server/scenario_variants.py). It uses Python's deterministic `random.Random(f"{task_id}:{seed}")` pattern to create repeatable train/test variants while preserving the scenario's solution structure. Today it varies safe surface values such as:
+
+- buyer occupation
+- rent and budget amounts
+- generated buyer/seller opening messages
+
+This is the random-detail framework for the environment: all generated details should come from a seed, remain synthetic, and be applied only to fields that do not change the answer key. The current scenarios do not require named buyer or seller identities. If names are added later, generate them in this variant layer, keep them synthetic, and never place real contact details in scenario files or observations.
+
+The important constraint is that seeded variants preserve:
+
+- task id
+- post ids
+- required tools
+- feasible slots
+- required bookings
+- phase transitions
+- canonical success path
+
+That means train and test episodes can have different visible details without leaking a different solution rule into the prompt. If future scenarios need person names or richer contact details, add them through the same seeded variant layer using synthetic-only values. Do not add real names, phone numbers, emails, addresses, or scraped listing text.
+
+For stricter evaluation, set:
+
+```bash
+STRICT_EVAL_MODE=true
+```
+
+Strict eval mode hides direct scenario labels, difficulty, gathered/remaining fields, violations, tool traces, and rewards from the observation while still allowing sanitized tool results. Use this when you want to reduce prompt leakage during model evaluation.
 
 ## Action Format
 
@@ -139,6 +216,8 @@ The environment enforces sequencing constraints. For example:
 - searching before `store_user_details` fails
 - seller follow-up tools cannot be used before `store_seller_details`
 - bookings fail if the required confirmations are missing
+- unknown tools or missing required tool arguments terminate the episode with a hallucination penalty
+- repeated successful tool calls and non-canonical ordering are penalized
 
 ## Quick Start
 
@@ -170,7 +249,7 @@ obs = env.step(
 print(obs.last_tool_result)
 ```
 
-## Training an RL Agent
+## Training An RL Agent
 
 The action space is mixed discrete-plus-structured:
 
@@ -181,10 +260,19 @@ The action space is mixed discrete-plus-structured:
 In practice, the easiest setup is usually:
 
 1. use an LLM policy or seq2seq policy that emits a structured action object
-2. compute reward from `done`, `violations`, `booked_visits`, and `last_tool_result`
-3. train with policy gradient, GRPO, PPO, or offline imitation plus RL fine-tuning
+2. serialize the observation into a prompt
+3. parse the model response into `FlatmateRlAction`
+4. step the environment
+5. train from `step_reward`, `total_reward`, `done`, `violations`, `booked_visits`, and `last_tool_result`
 
-### Example Training Loop
+Good training progressions are:
+
+- imitation/SFT on correct broker trajectories
+- GRPO/PPO/REINFORCE with endpoint reward
+- terminal-reward training where the candidate action is replayed into a full rollout
+- held-out seeded evaluation with strict eval mode enabled
+
+### Local In-Process Training Loop
 
 The example below shows a minimal policy-gradient style skeleton. It is intentionally simple and is meant to show how to interact with the environment, not to be a production trainer.
 
@@ -325,16 +413,173 @@ if __name__ == "__main__":
     train()
 ```
 
-### Recommended Training Strategy
+### Endpoint Training Loop
 
-For serious training, a better progression is:
+When training against Docker or the Hugging Face Space, keep the episode on the websocket endpoint. A websocket session holds one environment instance across `reset` and `step`.
 
-1. Start with supervised trajectories for correct broker flows.
-2. Fine-tune with RL on sparse success reward plus shaping reward.
-3. Penalize:
-   `violations`, failed tool calls, missing storage steps, invalid booking attempts.
-4. Reward:
-   correct information gathering, correct tool order, valid slot coordination, successful booking completion.
+```python
+from __future__ import annotations
+
+import asyncio
+import json
+from urllib.parse import urlparse
+
+import websockets
+
+
+def ws_url_from_http(base_url: str) -> str:
+    parsed = urlparse(base_url.rstrip("/"))
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    return f"{scheme}://{parsed.netloc}/ws"
+
+
+class FlatmateWsEnv:
+    def __init__(self, base_url: str, timeout_s: float = 120.0) -> None:
+        self.ws_url = ws_url_from_http(base_url)
+        self.timeout_s = timeout_s
+        self.ws = None
+
+    async def __aenter__(self):
+        self.ws = await websockets.connect(
+            self.ws_url,
+            open_timeout=self.timeout_s,
+            ping_timeout=self.timeout_s,
+        )
+        return self
+
+    async def __aexit__(self, *_exc):
+        if self.ws is not None:
+            await self.ws.send(json.dumps({"type": "close"}))
+            await self.ws.close()
+
+    async def _send(self, payload: dict) -> dict:
+        assert self.ws is not None
+        await self.ws.send(json.dumps(payload))
+        raw = await asyncio.wait_for(self.ws.recv(), timeout=self.timeout_s)
+        data = json.loads(raw)
+        obs = data.get("observation", data)
+        obs["reward"] = data.get("reward", obs.get("step_reward", 0.0))
+        obs["done"] = data.get("done", obs.get("done", False))
+        return obs
+
+    async def reset(self, scenario_id: str, seed: int | None = None) -> dict:
+        data = {"scenario_id": scenario_id}
+        if seed is not None:
+            data["seed"] = seed
+        return await self._send({"type": "reset", "data": data})
+
+    async def step(self, action: dict) -> dict:
+        return await self._send({"type": "step", "data": action})
+
+
+async def rollout(base_url: str) -> None:
+    async with FlatmateWsEnv(base_url) as env:
+        obs = await env.reset("task_visit_single", seed=7)
+
+        action = {
+            "action_type": "assistant_message",
+            "assistant_message": "Please share your dietary preference and visit availability.",
+        }
+        obs = await env.step(action)
+        print(obs["status"], obs["reward"], obs["done"])
+
+
+asyncio.run(rollout("http://127.0.0.1:8000"))
+```
+
+Use the same client for the hosted Space by changing the base URL to the Space app URL.
+
+## Running With Docker
+
+Build and run locally:
+
+```bash
+cd flatmate_rl
+docker build -t flatmate_rl .
+docker run --rm -p 8000:8000 flatmate_rl
+```
+
+Open the UI:
+
+```text
+http://127.0.0.1:8000/web
+```
+
+Use the websocket endpoint for training:
+
+```text
+ws://127.0.0.1:8000/ws
+```
+
+The Dockerfile uses the OpenEnv base image, installs dependencies with `uv`, sets `ENABLE_WEB_INTERFACE=true`, exposes the app on port `8000`, and starts:
+
+```bash
+uvicorn server.app:app --host 0.0.0.0 --port 8000
+```
+
+## Hugging Face Space Deployment
+
+The deployed Space is:
+
+```text
+https://huggingface.co/spaces/kushalExplores/flatmate_rl
+```
+
+The Space is configured as a Docker Space in the README metadata:
+
+```yaml
+sdk: docker
+app_port: 8000
+base_path: /web
+```
+
+The OpenEnv deployment config is in [openenv.yaml](openenv.yaml):
+
+```yaml
+spec_version: 1
+name: flatmate_rl
+type: space
+runtime: fastapi
+app: server.app:app
+port: 8000
+```
+
+How it is deployed:
+
+1. Hugging Face builds [Dockerfile](Dockerfile).
+2. The image copies this repo into `/app/env`.
+3. Dependencies are installed with `uv sync`.
+4. The runtime starts `server.app:app` with Uvicorn on port `8000`.
+5. `server.app` creates the OpenEnv FastAPI app with `FlatmateRlEnvironment`, `FlatmateRlAction`, and `FlatmateRlObservation`.
+6. The custom Gradio interface is mounted at `/web`.
+
+The public Space page is the stable share URL. For programmatic training, use the app websocket endpoint exposed by the running Space:
+
+```text
+wss://kushalexplores-flatmate-rl.hf.space/ws
+```
+
+For the browser UI, open:
+
+```text
+https://kushalexplores-flatmate-rl.hf.space/web
+```
+
+If Hugging Face changes the direct app subdomain, open the Space page and use the app link shown there.
+
+The server is configured with `max_concurrent_envs=4`, so keep GRPO/PPO reward workers conservative at first. Increase rollout concurrency only after the endpoint is stable.
+
+## Training Strategy
+
+For serious training:
+
+1. Collect balanced rollouts across all scenario ids and seeds.
+2. Keep train/test seeds separate.
+3. Start with SFT or imitation on valid JSON actions.
+4. Add RL reward from the environment endpoint.
+5. Penalize malformed JSON, unknown tools, missing arguments, invalid booking attempts, repeated successful tools, and non-canonical ordering.
+6. Reward correct information gathering, correct tool order, valid slot coordination, negotiated deals, waitlist handling, and successful terminal completion.
+7. Evaluate with held-out seeds and `STRICT_EVAL_MODE=true`.
 
 ## Web UI
 
@@ -355,30 +600,6 @@ Run locally:
 ```bash
 cd flatmate_rl
 uv run --project . server
-```
-
-Then open:
-
-```text
-http://127.0.0.1:8000/web
-```
-
-## Docker
-
-This repo includes a Dockerfile similar to `sudoku_rl`.
-
-It enables the web interface by default:
-
-```dockerfile
-ENV ENABLE_WEB_INTERFACE=true
-```
-
-Build and run:
-
-```bash
-cd flatmate_rl
-docker build -t flatmate_rl .
-docker run -p 8000:8000 flatmate_rl
 ```
 
 Then open:
@@ -439,6 +660,7 @@ flatmate_rl/
 │   ├── flatmate_rl_environment.py
 │   ├── gradio_ui.py
 │   ├── scenario_factory.py
+│   ├── scenario_variants.py
 │   └── scenarios.py
 └── tests/
     └── test_flatmate_rl.py
@@ -448,4 +670,3 @@ flatmate_rl/
 
 - The environment is deterministic and designed for RL experimentation, not as a drop-in replacement for the original multi-LLM broker simulator.
 - The current Python 3.13 Anaconda runtime in this workspace can crash when importing parts of `openenv`; using the local Python 3.12 virtualenv is the safer path for testing here.
-# flatmate_rl
