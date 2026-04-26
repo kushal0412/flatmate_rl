@@ -17,6 +17,35 @@ At the end of this process, most people still do not have a clean path forward. 
 
 This is the problem Flatmate RL models. A human broker is essentially an agent operating in a messy housing environment: they have access to listings, talk to owners and buyers, check calendars, negotiate on behalf of both sides, and carry context across days or weeks. Flatmate RL turns that workflow into an OpenEnv reinforcement-learning environment.
 
+## Why Existing Flat And Flatmate Interfaces Feel Broken
+
+Most flat and flatmate discovery today happens through feed-based interfaces: Facebook groups, WhatsApp groups, Telegram channels, listing boards, and broker chats. These interfaces are useful for supply, but poor for decision-making.
+
+The user experience usually looks like this:
+
+- posts appear in chronological order, not by fit
+- the same listing is reposted many times
+- availability is unclear or already outdated
+- budgets, diet preferences, gender preferences, commute constraints, and move-in dates are written in inconsistent formats
+- users must message many people just to learn whether a place is still open
+- visit slots are not connected to the listing
+- once a buyer changes preferences after a visit, the whole search starts again
+
+In short, the interface shows information, but it does not manage the task. The buyer still has to remember every thread, compare every option, ask every follow-up, and coordinate every visit manually.
+
+An agent changes the interface from a feed into a workflow. A few examples make the difference clearer:
+
+| Situation | Current flatmate search | Agent-led flatmate search |
+| --- | --- | --- |
+| Repeated listings | A buyer sees the same Andheri West listing reposted by three people and has to guess whether it is still active. | The agent treats duplicates as one lead, checks whether the listing is still available, and keeps only the useful version. |
+| Missing details | A post says "female flatmate needed, good society, DM for rent" but does not mention rent, diet, move-in date, or visit timing. | The agent asks for the missing fields before treating the post as a real option. |
+| Budget mismatch | A buyer has a Rs. 20,000 budget and ignores a Rs. 24,000 listing, even though the seller may negotiate. | The agent can probe both sides, find a possible overlap, and close at a negotiated price if both agree. |
+| Visit scheduling | The buyer messages "Can I visit Saturday?" and waits while the poster manually checks with current flatmates. | The agent checks available slots first, proposes only open times, and books after both sides confirm. |
+| Preference change | After visiting one place, the buyer realizes the area is too noisy, but the search feed does not remember that. | The agent debriefs the visit, updates the profile, and filters future listings for quieter areas. |
+| New supply | A seller posts a better matching room two days later, but the buyer has already stopped watching the group. | The agent keeps the buyer context alive and can match new seller supply back to the saved buyer profile. |
+
+That is the key shift Flatmate RL tries to train: not a better search box, but a better operating layer for the whole housing workflow.
+
 ## The Environment At A Glance
 
 ```text

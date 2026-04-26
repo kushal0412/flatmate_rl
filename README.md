@@ -52,7 +52,7 @@ flowchart TD
 | Area | Details |
 | --- | --- |
 | Runtime | OpenEnv environment served through FastAPI |
-| Domain | Mumbai flatmate-share brokerage |
+| Domain | flatmate-share search and visit scheduling |
 | Policy output | `assistant_message` or structured `tool_call` |
 | Observation | transcript, phase, tools, fields, posts, bookings, violations, reward |
 | Reward signal | positive workflow progress, penalties for invalid order, hallucinated tools, bad bookings |
