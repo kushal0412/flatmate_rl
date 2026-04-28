@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 from typing import Any
 
 try:
@@ -106,6 +107,21 @@ def _store_or_ask(remaining: set[str], task_id: str, phase: str) -> dict[str, An
     return {"action_type": "tool_call", "tool_name": "store_user_details", "tool_arguments": {}}
 
 
+def _extract_stated_budget(observation: dict[str, Any], fallback: int = 20000) -> int:
+    text_parts = [
+        str(observation.get("current_user_request", "")),
+        str(observation.get("last_user_message", "")),
+    ]
+    for entry in observation.get("buyer_conversation_history", []):
+        if entry.get("role") == "user":
+            text_parts.append(str(entry.get("content", "")))
+    text = " ".join(text_parts)
+    matches = re.findall(r"Rs\.\s*([0-9][0-9,]*)", text)
+    if not matches:
+        return fallback
+    return int(matches[0].replace(",", ""))
+
+
 def _autopolicy_negotiation(
     observation: dict[str, Any],
     tool_names: list[str],
@@ -115,6 +131,10 @@ def _autopolicy_negotiation(
     """Heuristic for task_negotiation_hidden_budget."""
     def has_tool(name: str) -> bool:
         return name in tool_names
+
+    stated_budget = _extract_stated_budget(observation)
+    buyer_probe_high = stated_budget + 3000
+    overlap_price = stated_budget + 1000
 
     if not observation.get("buyer_profile_stored"):
         return _store_or_ask(remaining, "task_negotiation_hidden_budget", "buyer")
@@ -131,13 +151,28 @@ def _autopolicy_negotiation(
     # Probe buyer: first at a value above their ceiling (expect reject), then below
     buyer_probes = [t for t in observation.get("tool_trace", []) if t.get("tool") == "propose_price_to_buyer"]
     if len(buyer_probes) == 0:
-        return {"action_type": "tool_call", "tool_name": "propose_price_to_buyer", "tool_arguments": {"post_id": "post_155", "proposed_rent": 23000}}
+        return {"action_type": "tool_call", "tool_name": "propose_price_to_buyer", "tool_arguments": {"post_id": "post_155", "proposed_rent": buyer_probe_high}}
     if len(buyer_probes) == 1:
-        return {"action_type": "tool_call", "tool_name": "propose_price_to_buyer", "tool_arguments": {"post_id": "post_155", "proposed_rent": 21000}}
+        return {"action_type": "tool_call", "tool_name": "propose_price_to_buyer", "tool_arguments": {"post_id": "post_155", "proposed_rent": overlap_price}}
+    buyer_accepted = {
+        int(t.get("args", {}).get("proposed_rent", 0))
+        for t in buyer_probes
+        if "accepted" in str(t.get("message", "")).lower()
+    }
     seller_probes = [t for t in observation.get("tool_trace", []) if t.get("tool") == "propose_price_to_seller"]
     if not seller_probes:
-        return {"action_type": "tool_call", "tool_name": "propose_price_to_seller", "tool_arguments": {"post_id": "post_155", "proposed_rent": 21000}}
-    return {"action_type": "tool_call", "tool_name": "confirm_negotiated_deal", "tool_arguments": {"post_id": "post_155", "agreed_rent": 21000}}
+        return {"action_type": "tool_call", "tool_name": "propose_price_to_seller", "tool_arguments": {"post_id": "post_155", "proposed_rent": overlap_price}}
+    seller_accepted = {
+        int(t.get("args", {}).get("proposed_rent", 0))
+        for t in seller_probes
+        if "accepted" in str(t.get("message", "")).lower()
+    }
+    agreed_prices = sorted(buyer_accepted & seller_accepted)
+    if agreed_prices:
+        return {"action_type": "tool_call", "tool_name": "confirm_negotiated_deal", "tool_arguments": {"post_id": "post_155", "agreed_rent": agreed_prices[0]}}
+    if buyer_accepted:
+        return {"action_type": "tool_call", "tool_name": "propose_price_to_seller", "tool_arguments": {"post_id": "post_155", "proposed_rent": max(buyer_accepted)}}
+    return {"action_type": "tool_call", "tool_name": "propose_price_to_buyer", "tool_arguments": {"post_id": "post_155", "proposed_rent": overlap_price - 500}}
 
 
 def _autopolicy_waitlist(
