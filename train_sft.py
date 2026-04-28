@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Any
 
@@ -10,13 +11,39 @@ from typing import Any
 def require_training_deps():
     try:
         import torch
-        from datasets import load_dataset
+        from datasets import Dataset, DatasetDict
         from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
     except ImportError as exc:
         raise SystemExit(
             "SFT training requires optional dependencies. Install torch, transformers, and datasets first."
         ) from exc
-    return torch, load_dataset, AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
+    return torch, Dataset, DatasetDict, AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
+
+
+def _read_messages_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            rows.append({"messages": payload["messages"]})
+    return rows
+
+
+def load_sft_dataset(Dataset: Any, DatasetDict: Any, train_file: Path, eval_file: Path) -> Any:
+    """Load only the uniform messages column.
+
+    The generated JSONL also includes an `action` object whose nested keys vary
+    by tool. Hugging Face JSON feature inference can fail on that heterogeneous
+    column, so training intentionally loads the stable chat messages only.
+    """
+    return DatasetDict(
+        {
+            "train": Dataset.from_list(_read_messages_jsonl(train_file)),
+            "eval": Dataset.from_list(_read_messages_jsonl(eval_file)),
+        }
+    )
 
 
 def render_messages(tokenizer: Any, messages: list[dict[str, str]], *, add_generation_prompt: bool) -> str:
@@ -122,7 +149,7 @@ def main() -> None:
     parser.add_argument("--fp16", action="store_true")
     args = parser.parse_args()
 
-    torch, load_dataset, AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments = require_training_deps()
+    torch, Dataset, DatasetDict, AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments = require_training_deps()
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     if tokenizer.pad_token is None:
@@ -134,10 +161,7 @@ def main() -> None:
     )
     model.config.pad_token_id = tokenizer.pad_token_id
 
-    dataset = load_dataset(
-        "json",
-        data_files={"train": str(args.train_file), "eval": str(args.eval_file)},
-    )
+    dataset = load_sft_dataset(Dataset, DatasetDict, args.train_file, args.eval_file)
     tokenized = dataset.map(
         build_tokenizer_mapper(tokenizer, args.max_length),
         remove_columns=dataset["train"].column_names,
